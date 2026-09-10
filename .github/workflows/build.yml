@@ -1,0 +1,43 @@
+name: Test and package
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Qt dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxcb-cursor0 libpulse0 libx11-dev pkg-config gcc xvfb xauth x11-utils ffmpeg
+      - run: python -m pip install -e ".[dev]"
+      - name: Linux tests including isolated X11 input
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: Windows tests
+        if: runner.os == 'Windows'
+        run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - run: python scripts/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infotainment-lab-${{ runner.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error

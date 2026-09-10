@@ -1,0 +1,28 @@
+{
+  "requested": {
+    "brake_pct": 15.0,
+    "gear": "D",
+    "indicator": "left",
+    "speed_kph": 42.0,
+    "steering_deg": 90.0,
+    "throttle_pct": 20.0
+  },
+  "firmware": {
+    "com.tesla.CenterDisplay": {
+      "brake_pct": "accepted",
+      "gear": "accepted",
+      "indicator": "accepted",
+      "speed_kph": "accepted",
+      "steering_deg": "accepted",
+      "throttle_pct": "accepted"
+    },
+    "com.tesla.ClusterDisplay": {
+      "brake_pct": "accepted",
+      "gear": "accepted",
+      "indicator": "accepted",
+      "speed_kph": "accepted",
+      "steering_deg": "accepted",
+      "throttle_pct": "accepted"
+    }
+  }
+}

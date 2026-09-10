@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "id": "mcu2-2026.26.6.1",
+      "version": "2026.26.6.1",
+      "variant": "modelsx_info2",
+      "name": "Model S / X · MCU2",
+      "architecture": "x86_64",
+      "center_build_id": "6e5be629ea4c0546bc157c9ac6c5bd323b888ba7",
+      "cluster_build_id": "b568abe1e320808c6131ae95bcffed7736762aae",
+      "validation": "Windows 11 / WSL2 Debian / AMD D3D12",
+      "limits": ["Offline map routing and physical vehicle services are not implemented", "Commercial streaming and DRM playback have not been verified", "Side/front camera views are unverified"]
+    }
+  ]
+}
