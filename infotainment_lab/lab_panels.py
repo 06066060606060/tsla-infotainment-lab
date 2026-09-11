@@ -214,8 +214,8 @@ class ServicesPanel(Panel):
         self.text('The local model covers climate, body indicators, energy, audio and trip data. Tire pressure remains a local value. Connected accounts, physical vehicle hardware and live traffic require their own services.',
                   '本地模型包含空调、车身提示、电量、声音和行程数据。胎压目前保存在本地。账号、真实车辆硬件与实时路况需要对应服务。')
         self.text('Service Mode', 'Service Mode', 'subtitle')
-        self.text('On the center display, open Controls → Software. Hold MODEL for two seconds, then enter service in the native access-code box. Use Exit Service Mode in the native menu to leave.',
-                  '在中控打开 Controls → Software，长按 MODEL 两秒，然后在原生输入框内输入 service。退出时使用原生菜单中的 Exit Service Mode。')
+        self.text('Keep Vehicle alarm armed off in the Doors tab. On the center display, open Controls → Software. Hold MODEL for two seconds, then enter service in the native access-code box. Use Exit Service Mode in the native menu to leave.',
+                  '在“车门”页保持“车辆报警已布防”关闭。在中控打开 Controls → Software，长按 MODEL 两秒，然后在原生输入框内输入 service。退出时使用原生菜单中的 Exit Service Mode。')
         self.layout.addWidget(window.button('Show center display', '显示中控屏',
                                             lambda: window.bridge.call('focus', '--display', 'center')))
         self.layout.addStretch()

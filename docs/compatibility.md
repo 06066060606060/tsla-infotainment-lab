@@ -1,10 +1,10 @@
 # Compatibility · 兼容性
 
-This matrix describes version **0.4.1** and the local configuration used for
+This matrix describes version **0.4.2** and the local configuration used for
 validation. An imported image's build profile determines whether it can launch.
 The library can inspect images beyond the currently supported launch profile.
 
-此表描述 **0.4.1** 及本地验证环境。设备库可检查更多镜像，但能否启动取决于
+此表描述 **0.4.2** 及本地验证环境。设备库可检查更多镜像，但能否启动取决于
 是否存在匹配的构建适配。
 
 ## Host and firmware
@@ -76,7 +76,7 @@ drawtext. See [replay documentation](replay.md).
 | Tires | Four editable local pressure values | Native TPMS units remain unverified; pressure is not injected. |
 | Driving state | Same local inputs sent to both displays, with readback | Does not recreate the complete vehicle IPC graph. |
 | Preferences | Santa, supported theme/wheel and unit/audio preferences; center-owned playback metadata forwarded to instruments | The current default session reports 23 shared values; unsupported fields remain in diagnostics. |
-| Service Mode | Official manual entry instructions and a button to focus the center | Manual long-press entry remains unverified; complete diagnostic services are not implemented. |
+| Service Mode | Native center entry through the normal access-code flow; enter/exit state forwarded to the instrument cluster | Complete diagnostic gateway services and Service Mode Plus are not implemented. |
 | Vehicle/cloud-only services | Capability report lists unavailable domains | Physical ECU/CAN, powertrain, cellular provisioning, accounts, phone keys, payments and remote services are not connected. |
 
 “Applied” means the display read back the intended value. Unsupported, rejected,

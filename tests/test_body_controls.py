@@ -47,6 +47,17 @@ def test_legacy_headlight_settings_and_manual_override():
         auto.patched({'exterior_light_mode': 'unrecognized'})
 
 
+def test_service_mode_alarm_precondition_defaults_to_disarmed_and_can_be_armed():
+    model = VehicleServices()
+    assert model.alarm_armed is False
+    assert display_values(model)['alarm_armed'] == {
+        'VAPI_alarmStatus': 'Disarmed', 'GUI_alarmOnRequest': False}
+    armed = model.patched({'alarm_armed': True})
+    assert display_values(armed)['alarm_armed'] == {
+        'VAPI_alarmStatus': 'Armed', 'GUI_alarmOnRequest': True}
+    assert decode_service_request('alarm_armed', True) is True
+
+
 class NativeRequests:
     def __init__(self):
         self.values = {'GUI_rearTrunkRequest': 'None', 'GUI_lockRequest': 'None'}

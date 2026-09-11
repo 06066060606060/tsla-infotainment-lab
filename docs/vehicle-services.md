@@ -51,12 +51,22 @@ Auto, Dark outside determines whether the headlights and parking lights are on.
 ## Service Mode
 
 The desktop Services page includes the normal touchscreen entry instructions
-and a button to focus the center display. It does not force diagnostic access
-or simulate successful vehicle service routines. Native Service Mode entry has
-not yet been verified in this session. Use Controls → Software, hold MODEL for
-two seconds and enter the public service code in the native prompt; exit through
-the native Exit Service Mode control. This is the touchscreen procedure in
+and a button to focus the center display. The local model publishes
+`VAPI_alarmStatus=Disarmed` by default because an invalid alarm state causes the
+native access-code dialog to reject entry. The Doors page can select Armed for
+alarm-state UI testing. Both values remain inside this application's private
+display services; no command is sent to vehicle hardware.
+
+Native Service Mode entry was verified in the running MCU2 center display. Use
+Controls → Software, hold MODEL for two seconds and enter the public service code
+in the native prompt; exit through the native Exit Service Mode control. Enter
+and exit state is center-owned and forwarded to the instrument display. This is
+the touchscreen procedure in
 [Tesla's Model S service manual](https://service.tesla.com/docs/ModelS/ServiceManual/en-au/air/GUID-0DC534D7-A4B8-417F-8E42-DF1560E970C2.html).
+
+This fixes the native UI precondition without changing its access-code or
+authentication logic. The red `NO GATEWAY SYSTEM / GTW LOCKED` status is expected:
+complete diagnostic gateway routines and Service Mode Plus are not implemented.
 
 During replay, the service model retains manually entered location values.
 The active recording's GPS/heading are in `replay-status.json`, and `gps_source`

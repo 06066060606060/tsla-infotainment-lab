@@ -4,7 +4,7 @@
 
 一个使用 Python 与 Qt 编写的**原生 Linux 桌面应用**。导入自备的适配固件，即可在独立桌面窗口中运行真实车机中控与仪表界面。控制面板直接在 Linux 或 Windows WSLg 中启动。
 
-**0.4.1** 修复了文字渲染花字，使用当前固件自带字体，并改进方向盘按钮、转向灯、车身控制与双屏同步。经过验证的固件为 **2026.26.6.1 · Model S/X · MCU2（`modelsx_info2`）**。完整变化和未完成项目见[更新日志](CHANGELOG.md)。
+**0.4.2** 修复 Service Mode 的报警状态前置条件，并将原生 Service Mode 状态同步到仪表；同时包含 0.4.1 的字体、方向盘、转向灯、车身控制和显示通道修复。经过验证的固件为 **2026.26.6.1 · Model S/X · MCU2（`modelsx_info2`）**。完整变化和未完成项目见[更新日志](CHANGELOG.md)。
 
 ## 使用前：需要自备固件
 
@@ -124,7 +124,11 @@ bash Launch-Linux.sh
 
 四扇车门与前后备箱分别驱动原生 3D 开合状态，中控的备箱和锁车按钮会更新本地模型。
 车外灯光支持关闭、示宽灯、开启和自动模式；自动模式跟随“环境较暗”输入。
-车辆服务页也提供 Service Mode 的正常进入说明，实际进入及诊断例程尚未验证。
+车辆服务页提供 Service Mode 的正常进入说明。中控已通过普通访问码流程进入原生 Service Mode，状态也会同步到仪表；完整诊断网关例程和 Service Mode Plus 尚未实现。
+
+<img src="docs/screenshots/service-mode-center.png" width="350" alt="中控进入原生 Service Mode" />
+
+![仪表同步显示原生 Service Mode](docs/screenshots/service-mode-cluster.png)
 
 ![原生车门和备箱开合状态](docs/screenshots/cluster-doors.png)
 

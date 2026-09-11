@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2 — 2026-09-10
+
+- Added a local vehicle-alarm state and publishes the firmware's native `VAPI_alarmStatus` as `Disarmed` by default. The previous invalid value blocked the normal Service Mode access-code flow.
+- Confirmed the real MCU2 center display enters Service Mode after entering the normal code; no access-code, gateway or authentication check is patched.
+- Made Service Mode a center-owned display channel. The instrument cluster receives enter/exit state and renders its native Service Mode overlay.
+- Added a vehicle-alarm toggle to the Doors page for armed-state UI testing. It affects only this application's private display services and never sends a disarm request to vehicle hardware.
+- Full diagnostic gateway services and Service Mode Plus remain unavailable in the local lab.
+
+### 中文
+
+- 增加本地车辆报警状态，默认向固件发布原生 `VAPI_alarmStatus=Disarmed`，修复无效状态阻止正常进入 Service Mode 的问题。
+- 已在真实运行的 MCU2 中控验证正常输入代码后进入 Service Mode；没有修改访问码、网关或认证检查。
+- Service Mode 状态由中控同步到仪表，仪表显示原生 Service Mode 画面；车门页可切换本地报警布防状态。
+- 该状态只存在于应用私有显示服务，不会向真实车辆发送解除报警命令；完整诊断网关和 Service Mode Plus 仍不可用。
+
 ## 0.4.1 — 2026-09-10
 
 - Fixed striped and scrambled native text by restoring OpenGL unpack alignment after each 3D texture upload, including failed uploads.

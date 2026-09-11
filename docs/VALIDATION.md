@@ -1,8 +1,8 @@
 # Validation record
 
-## Version 0.4.1: fonts, display channels and native music (2026-09-10)
+## Version 0.4.2: Service Mode, fonts and display channels (2026-09-10)
 
-- Linux: 152 tests passed. Windows: 132 passed, 20 Linux-specific checks skipped.
+- Linux: 154 tests passed. Windows: 134 passed, 20 Linux-specific checks skipped.
 - The native compositor left `GL_UNPACK_ALIGNMENT=1` in Qt's shared context.
   Restoring its previous value after the 3D upload removed the diagonal/striped
   text corruption in the live center Software/Controls pages and cluster alerts.
@@ -69,8 +69,16 @@
   both displays. The native parking mode uses the enum name ParkingLights;
   the desktop translates its Parking choice at that boundary. Clicking Off in
   the actual center changed both headlight and parking-light states to false.
-- The normal Software page was reached for Service Mode. The manual long-press
-  entry step remains unverified; no diagnostic-access state was forced.
+- Both displays initially reported `VAPI_alarmStatus=<invalid>`. Native enum
+  sampling established `0=Disarmed`, `1=Armed`, `2=PartialArmed`,
+  `3=TriggeredFlash`, `4=Error`, `5=TriggeredNoFlash`, and `7=Default`.
+  The local model now publishes `Disarmed` by default and both displays read it
+  back. With the normal access-code flow, the center changed
+  `GUI_serviceMode` from false to true and displayed its native red Service Mode
+  frame. Forwarding that center-owned state made the instrument display render
+  its native Service Mode overlay. See the clean [center capture](screenshots/service-mode-center.png)
+  and [instrument capture](screenshots/service-mode-cluster.png). No access-code,
+  gateway identity or authentication decision was patched.
 - Spotify still failed in the real center window. Its native publishers first
   lacked `/tmp/dvaccess`; creating a user-owned private directory exposed the
   next failure: the center rejects SpotifyServer and ChromiumAdapterService

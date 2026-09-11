@@ -4,7 +4,7 @@
 
 A native Linux desktop application for running and studying infotainment software on your own computer. Drop in a supported firmware image and open the real center display and instrument cluster as desktop windows. The Python/Qt control panel runs directly on Linux or Windows WSLg.
 
-Version **0.4.1** fixes corrupted text rendering, uses the selected firmware's own fonts, and improves steering buttons, turn signals, body controls and display synchronization. The tested firmware is **2026.26.6.1 · Model S/X · MCU2 (`modelsx_info2`)**. See the [changelog](CHANGELOG.md) for changes and remaining limitations.
+Version **0.4.2** fixes Service Mode's alarm-state prerequisite and synchronizes its native state to the instrument cluster. It also includes the 0.4.1 font, steering, turn-signal, body-control and display-channel fixes. The tested firmware is **2026.26.6.1 · Model S/X · MCU2 (`modelsx_info2`)**. See the [changelog](CHANGELOG.md) for changes and remaining limitations.
 
 ## Bring your own firmware
 
@@ -129,8 +129,13 @@ Left, right and hazard signals drive the native instrument arrows with an
 Each door and trunk now drives its own native 3D position. Center-display trunk
 and lock buttons feed the local model. Exterior lights support Off, Parking, On
 and Auto; Auto follows the **Dark outside** input. The Services page also contains
-the normal Service Mode entry instructions; entry and diagnostic routines remain
-unverified in the lab.
+the normal Service Mode entry instructions. The center and instrument displays
+now enter their native Service Mode after the ordinary access-code flow. Full
+diagnostic gateway routines and Service Mode Plus are not implemented.
+
+<img src="docs/screenshots/service-mode-center.png" width="350" alt="Native center display in Service Mode" />
+
+![Native instrument Service Mode overlay synchronized from the center](docs/screenshots/service-mode-cluster.png)
 
 ![Native door and trunk positions](docs/screenshots/cluster-doors.png)
 

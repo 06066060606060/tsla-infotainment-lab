@@ -73,7 +73,7 @@ def size_label(value: int) -> str:
 def public_report(status: dict, environment: dict) -> dict:
     """Export an allowlist: never include profiles, raw logs, paths or URLs."""
     return {
-        "application": "tsla-infotainment-lab", "version": "0.4.1",
+        "application": "tsla-infotainment-lab", "version": "0.4.2",
         "session": {k: status.get(k) for k in ("phase", "profile", "components", "renderer", "accelerated", "started_at")},
         "environment": {k: environment.get(k) for k in ("platform", "architecture", "missing", "display_available", "audio_available", "systemd_available")},
     }

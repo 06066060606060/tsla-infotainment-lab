@@ -44,6 +44,7 @@ def test_model_maps_only_display_telemetry_and_reports_unverified_domains():
     assert values["driver_door_open"]["VAPI_driverDoorAlert"] is False
     assert values["passenger_door_open"]["VAPI_doorAlert"] is True
     assert values["headlights"]["LIGHT_headlightLeft"] == "Off"
+    assert values["alarm_armed"]["VAPI_alarmStatus"] == "Disarmed"
     assert display_values(model.patched({"headlights": True}))["headlights"]["LIGHT_headlightLeft"] == "On"
     assert values["tire_fl_bar"] == {}
     assert CAPABILITIES["tires"]["mode"] == "local-model"
@@ -123,6 +124,13 @@ def test_playback_is_center_owned_and_empty_strings_clear_instrument_metadata():
     display = FakeDisplay()
     display.values['title'] = ''
     assert DisplayWriter(display).read('title') == (True, '')
+
+
+def test_service_mode_is_center_owned_and_propagates_to_the_cluster():
+    sync = PreferenceSync()
+    assert 'GUI_serviceMode' in CENTER_CHANNELS
+    assert sync.choose('GUI_serviceMode', True, False) == ('center', True, False)
+    assert sync.choose('GUI_serviceMode', False, True) == ('center', False, False)
 
 
 class FakeDisplay:

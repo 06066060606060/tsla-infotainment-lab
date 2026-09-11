@@ -38,6 +38,7 @@ class VehicleServices:
     front_trunk_open: bool = False
     rear_trunk_open: bool = False
     locked: bool = False
+    alarm_armed: bool = False
     headlights: bool = False
     exterior_light_mode: str = 'Off'
     ambient_dark: bool = False
@@ -131,6 +132,7 @@ FIELD_SPECS = {
     "front_trunk_open": _field("closures", "Front trunk open", "前备箱打开", "bool"),
     "rear_trunk_open": _field("closures", "Rear trunk open", "后备箱打开", "bool"),
     "locked": _field("closures", "Doors locked", "车门锁定", "bool"),
+    "alarm_armed": _field("closures", "Vehicle alarm armed", "车辆报警已布防", "bool"),
     "headlights": _field("lights", "Headlights (manual override)", "前照灯（手动覆盖）", "bool"),
     "exterior_light_mode": _field("lights", "Exterior lights", "车外灯光", "str",
                                   choices=('Off', 'Parking', 'On', 'Auto'), choices_zh=('关闭', '示宽灯', '开启', '自动')),
@@ -155,7 +157,7 @@ FIELD_SPECS = {
 
 CAPABILITIES = {
     "climate": {"mode": "local-display", "detail": "Climate requests and temperature/fan telemetry; no thermal physics."},
-    "closures": {"mode": "local-display", "detail": "Individual door/trunk display positions, native body requests and lock status; no physical actuators."},
+    "closures": {"mode": "local-display", "detail": "Individual door/trunk positions, native body requests, lock and simulated alarm status; no physical actuators."},
     "lights": {"mode": "local-display", "detail": "Headlight/high-beam indicators and lighting telemetry."},
     "energy": {"mode": "local-display", "detail": "Battery and charging telemetry; no battery or charging-station model."},
     "audio": {"mode": "host-backed", "detail": "Volume and mute for firmware audio streams on the host."},
@@ -196,6 +198,8 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "rear_trunk_open": {"VAPI_rearTrunkAlert": v.rear_trunk_open},
         "locked": {name: v.locked for name in ("VAPI_isLocked", "VAPI_frontDriverDoorLocked", "VAPI_frontPassengerDoorLocked",
                                                "VAPI_rearDriverDoorLocked", "VAPI_rearPassengerDoorLocked", "VAPI_trunkLocked")},
+        "alarm_armed": {"VAPI_alarmStatus": "Armed" if v.alarm_armed else "Disarmed",
+                        "GUI_alarmOnRequest": v.alarm_armed},
         "headlights": {"VAPI_headLights": v.headlights, "VAPI_telltaleHeadlights": v.headlights,
                        "LIGHT_headlightLeft": "On" if v.headlights else "Off", "LIGHT_headlightRight": "On" if v.headlights else "Off"},
         "high_beams": {"VAPI_highBeamLights": v.high_beams, "LIGHT_highBeamLeft": "On" if v.high_beams else "Off",
@@ -236,6 +240,7 @@ REQUEST_FIELDS = {
     "charge_limit_pct": "GUI_chargeLimitRequest", "muted": "GUI_muteAudioRequest",
     "volume_pct": "GUI_audioVolume",
     "exterior_light_mode": "GUI_lightSwitchRequest",
+    "alarm_armed": "GUI_alarmOnRequest",
 }
 
 
@@ -322,6 +327,7 @@ PREFERENCES = (
 # Playback belongs to the center display. Never send stale instrument metadata
 # back into the active player. Keep navigation and view-local state separate.
 CENTER_CHANNELS = (
+    'GUI_serviceMode',
     'GUI_nowPlayingTitle', 'GUI_nowPlayingArtist', 'GUI_nowPlayingAlbum',
     'GUI_nowPlayingStation', 'GUI_nowPlayingDuration', 'GUI_nowPlayingElapsed',
     'GUI_nowPlayingSeekable', 'GUI_mediaCurrentStatus', 'GUI_mediaNowPlayingSource',
