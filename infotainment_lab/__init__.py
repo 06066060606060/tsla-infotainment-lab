@@ -1,2 +1,2 @@
 """Infotainment Lab: desktop orchestration, with firmware supplied by its user."""
-__version__ = "0.4.0"
+__version__ = "0.4.1"

@@ -8,7 +8,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vehicle_services import PREFERENCES, PreferenceSync, DisplayWriter, decode_value, equivalent
+from vehicle_services import PREFERENCES, CENTER_CHANNELS, PreferenceSync, DisplayWriter, decode_value, equivalent
 
 state = Path(os.environ['TESLA_NATIVE_STATE'])
 firmware = Path(os.environ['TESLA_FIRMWARE']).resolve()
@@ -91,34 +91,42 @@ while True:
                     readers[short] = DisplayWriter(interfaces[short])
                 else:
                     readers.pop(short, None)
-        for name in PREFERENCES:
-            cok, cv = get(interfaces['center'], name, 'center')
-            iok, iv = get(interfaces['cluster'], name, 'cluster')
-            record = {'center': cv, 'cluster': iv, 'status': 'unavailable'}
-            if not cok or not iok or (cv is None and iv is None):
-                record['status'] = 'unsupported' if interfaces['center'] and interfaces['cluster'] else 'waiting-display'
-                if cok and iok and cv is None and iv is None:
+        for name in (*PREFERENCES, *CENTER_CHANNELS):
+            try:
+                cok, cv = get(interfaces['center'], name, 'center')
+                iok, iv = get(interfaces['cluster'], name, 'cluster')
+                record = {'center': cv, 'cluster': iv, 'status': 'unavailable'}
+                if not cok or not iok or (cv is None and iv is None):
+                    record['status'] = 'unsupported' if interfaces['center'] and interfaces['cluster'] else 'waiting-display'
+                    if cok and iok and cv is None and iv is None:
+                        record['status'] = 'waiting-value'
+                    if cok and cv is not None:
+                        values[name] = cv
+                    fields[name] = record
+                    continue
+                if name in CENTER_CHANNELS and cv is None:
                     record['status'] = 'waiting-value'
-                if cok and cv is not None:
-                    values[name] = cv
-                fields[name] = record
-                continue
-            source, chosen, conflict = sync.choose(name, cv, iv, restarted)
-            record.update(source=source or 'both', conflict=conflict)
-            if source:
-                target = 'cluster' if source == 'center' else 'center'
-                accepted = interfaces[target].DataSetValueRequest(name, typed(chosen), timeout=.3)
-                ok, actual = get(interfaces[target], name)
-                if accepted and ok and equivalent(actual, chosen):
-                    sync.accepted(name, chosen)
-                    record[target] = actual
-                    record['status'] = 'accepted'
+                    fields[name] = record
+                    continue
+                source, chosen, conflict = sync.choose(name, cv, iv, restarted)
+                record.update(source=source or 'both', conflict=conflict)
+                if source:
+                    target = 'cluster' if source == 'center' else 'center'
+                    accepted = interfaces[target].DataSetValueRequest(name, typed(chosen), timeout=.3)
+                    ok, actual = get(interfaces[target], name, target)
+                    if accepted and ok and equivalent(actual, chosen):
+                        sync.accepted(name, chosen)
+                        record[target] = actual
+                        record['status'] = 'accepted'
+                    else:
+                        record['status'] = 'rejected' if not accepted else 'mismatch'
                 else:
-                    record['status'] = 'rejected' if not accepted else 'mismatch'
-            else:
-                record['status'] = 'synchronized'
-            values[name] = chosen
-            fields[name] = record
+                    record['status'] = 'synchronized'
+                values[name] = chosen
+                fields[name] = record
+            except (dbus.DBusException, OSError, TypeError, ValueError) as exc:
+                fields[name] = {'status': 'error'}
+                errors[name] = str(exc)
         if tick >= last_audio + 1:
             last_audio = tick
             try:

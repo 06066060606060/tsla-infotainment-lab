@@ -13,6 +13,47 @@ if os.name != 'nt':
     import supervisor
 
 
+def test_media_port_conflict_reports_the_port_without_starting_services(monkeypatch):
+    import socket
+    class BusyPort:
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def setsockopt(self, *_): pass
+        def bind(self, address):
+            if address[1] == 9001:
+                raise OSError('Address already in use')
+    monkeypatch.setattr(socket, 'socket', lambda *_: BusyPort())
+    with pytest.raises(RuntimeError, match='9001'):
+        supervisor.check_media_ports()
+
+
+def test_native_service_directory_is_private_and_rejects_symlinks(tmp_path):
+    private = tmp_path / 'dvaccess'
+    supervisor.prepare_service_sockets(private)
+    assert private.stat().st_mode & 0o777 == 0o700
+    supervisor.prepare_service_sockets(private)
+    linked = tmp_path / 'alias'
+    linked.symlink_to(private, target_is_directory=True)
+    with pytest.raises(RuntimeError, match='private directory'):
+        supervisor.prepare_service_sockets(linked)
+    private.chmod(0o755)
+    with pytest.raises(RuntimeError, match='private directory'):
+        supervisor.prepare_service_sockets(private)
+
+
+def test_media_recovery_backs_off_and_stops_after_two_retries(monkeypatch):
+    launches = []
+    monkeypatch.setattr(supervisor, 'restart_specs', {'spotify': ('args', 'state', 'env')})
+    monkeypatch.setattr(supervisor, 'children', {'spotify': SimpleNamespace(poll=lambda: 1)})
+    monkeypatch.setattr(supervisor, 'service_retries', {})
+    monkeypatch.setattr(supervisor, 'retry_after', {})
+    monkeypatch.setattr(supervisor, 'launch', lambda *args: launches.append(args))
+    for now in (0, 1, 2, 3, 6, 7, 20, 100):
+        supervisor.recover_services(now)
+    assert len(launches) == 2
+    assert supervisor.service_retries == {'spotify': 2}
+
+
 def test_changed_image_requires_reimport(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, 'DATA', tmp_path)
     image = tmp_path / 'original.mcu2'
@@ -78,3 +119,18 @@ def test_capture_rejects_a_display_outside_session_range(monkeypatch):
     monkeypatch.setattr(backend, 'session_config', lambda: {'center_display': 'remote-host:0', 'cluster': False})
     with pytest.raises(RuntimeError, match='not ready'):
         backend.capture_displays()
+
+
+def test_rapid_volume_updates_preserve_pending_request_then_accept_native_feedback(tmp_path, monkeypatch):
+    from infotainment_lab.steering import execute
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    state = tmp_path / 'session/vehicle-services.json'
+    feedback = tmp_path / 'session/vehicle-services-feedback.json'
+    backend.atomic_json(feedback, {'state': {'volume_pct': 30}})
+    for _ in range(3):
+        execute('volume_up', None, None, backend.vehicle_services_state, backend.set_vehicle_services)
+    assert backend.load_json(state)['volume_pct'] == 45
+    # Once the request is consumed, a subsequent native edit is authoritative.
+    backend.atomic_json(feedback, {'state': {'volume_pct': 20}, 'config_mtime_ns': state.stat().st_mtime_ns})
+    execute('volume_up', None, None, backend.vehicle_services_state, backend.set_vehicle_services)
+    assert backend.load_json(state)['volume_pct'] == 25

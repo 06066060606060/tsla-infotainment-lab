@@ -6,18 +6,60 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
+import stat
 import subprocess
 import sys
 import time
 
 from core import atomic_json, load_json
-from browser import MODES, browser_arguments
+from browser import MODES, browser_arguments, media_browser_arguments
+from firmware_fonts import font_environment
 
 HERE = Path(__file__).resolve().parent
 RUNTIME = HERE / "runtime"
 children: dict[str, subprocess.Popen] = {}
 outputs = []
 stopping = False
+restart_specs = {}
+service_retries = {}
+retry_after = {}
+RECOVERABLE = {'spotify', 'media-adapter', 'media-webapp', 'chromium-media', 'display-link'}
+
+
+def prepare_service_sockets(path=Path('/tmp/dvaccess')):
+    """The native publishers and subscribers share this fixed Unix directory."""
+    path.mkdir(mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RuntimeError('The native service socket directory must be a private directory owned by this Linux user.')
+
+
+def check_media_ports():
+    # These are fixed endpoints in the supplied media app. Do not accidentally
+    # attach its browser to a different application's listener.
+    for port in (4210, 4540, 9000, 9001, 9007, 9009):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(('127.0.0.1', port))
+            except OSError as exc:
+                raise RuntimeError(f'Media port {port} is already in use. Close the other local media session and retry.') from exc
+
+
+def recover_services(now):
+    for name, spec in tuple(restart_specs.items()):
+        if children[name].poll() is None:
+            continue
+        count = service_retries.get(name, 0)
+        if count >= 2:
+            continue
+        if name not in retry_after:
+            retry_after[name] = now + 2 * (count + 1)
+        elif now >= retry_after[name]:
+            service_retries[name] = count + 1
+            retry_after.pop(name)
+            launch(name, *spec)
 
 
 class ConfigurationRestart(RuntimeError):
@@ -40,6 +82,8 @@ def launch(name: str, argv: list, state: Path, env: dict):
     process = subprocess.Popen([str(v) for v in argv], stdout=stream, stderr=subprocess.STDOUT,
                                env=env, cwd=env.get("TESLA_BIN", str(state)), stdin=subprocess.DEVNULL)
     children[name] = process
+    if name in RECOVERABLE:
+        restart_specs[name] = (argv, state, env)
     return process
 
 
@@ -115,6 +159,9 @@ def outer(config: dict, config_path: Path):
 
 def session(config: dict):
     state, firmware = Path(config["state"]), Path(config["firmware"])
+    if config['browser']:
+        check_media_ports()
+    prepare_service_sockets()
     ui = firmware / "usr/tesla/UI"
     base = dict(os.environ, TESLA_NATIVE_STATE=str(state), TESLA_FIRMWARE=str(firmware),
                 TESLA_NATIVE_CAR_TYPE="ModelS", TESLA_NATIVE_STATE_DELAY="0.2",
@@ -124,6 +171,7 @@ def session(config: dict):
     (state / "dbus-address").write_text(base["DBUS_SESSION_BUS_ADDRESS"])
     shutil.copyfile(RUNTIME / "audio-wslg.conf", state / "audio.conf")
     base["ALSA_CONFIG_PATH"] = str(state / "audio.conf")
+    base.update(font_environment(firmware, state))
     for home in ("center-home", "cluster-home", "apviz-home"):
         for folder in ("car", "data", "logs"):
             (state / home / ".Tesla" / folder).mkdir(parents=True, exist_ok=True)
@@ -139,6 +187,21 @@ def session(config: dict):
                TESLA_FORCE_NATIVE_APVIZ="1", TESLA_NATIVE_APVIZ_CPU_UPLOAD="1", TESLA_NATIVE_APVIZ_REFRESH_MS="33", TESLA_NATIVE_APVIZ_TRACE="0")
     preloads = f"{state}/native-input.so:{state}/native-compositor.so"
     addresses = ["--cid", "127.0.0.100", "--ic", "127.0.0.101", "--gw", "127.0.0.102", "--ap", "127.0.0.103"]
+    if config['browser']:
+        for name, executable in (('spotify', 'SpotifyServer'), ('media-adapter', 'ChromiumAdapter')):
+            home = state / (name + '-home')
+            (home / '.Tesla/data').mkdir(parents=True, exist_ok=True, mode=0o700)
+            launch(name, [ui / 'bin' / executable, '--gw', '127.0.0.102'], state,
+                   dict(gui, HOME=str(home), DISPLAY=config['center_display']))
+        launch('media-webapp', [firmware / 'usr/bin/media-webapp-server', '-bind=127.0.0.1',
+                               '-port=9000', '-secondary_port=9007', '-tertiary_port=9009',
+                               '-platform_type=intel', '-chassis_type=ms',
+                               '-firmware_version=2026.26.6.1', '-cache_exp_secs=900',
+                               '-oauth_reverse_proxy=https://activate.apple.com/',
+                               '-qq_music_api_reverse_proxy=https://qplaycloud.y.qq.com/rpc_proxy/fcgi-bin/music_open_api.fcg',
+                               '-qq_music_report_reverse_proxy=https://stat.y.qq.com/open/fcgi-bin/music_monitor_api.fcg',
+                               '-dir=' + str(firmware / 'opt/media-webapp')],
+               state, base)
     launch("center", [ui / "bin/QtCar", "-graphicssystem", "opengl", "--touch", "mouse", "--window", "0.6",
                       "--size", "1200x1920", "--rotate", "0", "--rate", "60", "--fps", "5", *addresses,
                       "--ip", "127.0.0.100", "--udp", "127.0.0.100:20101", "--udphp", "127.0.0.100:31415", "--udptx", ":4321"], state,
@@ -154,7 +217,7 @@ def session(config: dict):
                dict(gui, DISPLAY=config["cluster_display"], HOME=str(state / "cluster-home"), LD_PRELOAD=preloads))
     started = time.time()
     positioned = False
-    browser_started, viz_started, link_started = set(), False, False
+    browser_started, viz_started, link_started, media_started = set(), False, False, False
     browser_retries = {mode: 0 for mode in MODES}
     while not stopping:
         elapsed = time.time() - started
@@ -178,6 +241,9 @@ def session(config: dict):
             link_started = True
         if config["browser"] and elapsed > 6:
             browser_env = dict(base, DISPLAY=config["center_display"], LD_LIBRARY_PATH=str(firmware / "usr/lib/tesla-chromium"))
+            if not media_started:
+                launch('chromium-media', media_browser_arguments(firmware, state, RUNTIME), state, browser_env)
+                media_started = True
             for mode in MODES:
                 name = 'chromium' if mode == 'browser' else 'chromium-' + mode
                 if mode in browser_started and children[name].poll() is not None and browser_retries[mode] < 2:
@@ -196,12 +262,14 @@ def session(config: dict):
                                      "--resolution", "600x480", "--app", ui / "lib/libApVizGodot.so", "--audio-driver", "Dummy",
                                      "--video-driver", "GLES2", "--glmsaa", "0", "--ip", "127.0.0.101"], state, viz_env)
             viz_started = True
+        recover_services(time.monotonic())
         components = {name: ("running" if process.poll() is None else "exited") for name, process in children.items()}
         phase = "running" if elapsed > 15 and positioned else "starting"
         if any(value == "exited" for value in components.values()): phase = "degraded"
         atomic_json(state / "status.json", {"phase": phase, "profile": config["profile"], "started_at": started,
                     "renderer": config["renderer"], "accelerated": config["accelerated"], "components": components,
                     "map_mounted": bool(config["maps"]), "browser_restarts": browser_retries,
+                    "service_restarts": service_retries,
                     "configuration_restarts": config.get('configuration_restarts', 0)})
         time.sleep(1)
 

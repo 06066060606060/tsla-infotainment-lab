@@ -13,9 +13,11 @@ import time
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from simulation import Simulation, display_values as driving_values
+from simulation import Simulation, display_values as driving_values, indicator_values
 from vehicle_services import (VehicleServices, REQUEST_FIELDS, CAPABILITIES, DisplayWriter,
-                              display_values, equivalent, speed_display_values, replay_location)
+                              display_values, equivalent, speed_display_values, replay_location,
+                              MEDIA_NETWORK_SERVICES, media_network_values)
+from vehicle_services import BodyRequestRouter, decode_service_request
 
 bus = dbus.bus.BusConnection(os.environ['DBUS_SESSION_BUS_ADDRESS'])
 state = Path(os.environ['TESLA_NATIVE_STATE'])
@@ -91,7 +93,7 @@ def network_values(current):
         'CONN_wifiInterfaceIP': current['ip'], 'CONN_wifiInternetCheckFailed': not online,
         'LINK_wifiEnabled': connected, 'LINK_wifiConnectionStatus': 'connected' if connected else 'disconnected',
         'LINK_wifiSsid': 'Local lab network', 'LINK_wifiBars': 4 if online else 0,
-        'LINK_wifiState': 'connected' if connected else 'disconnected',
+        'LINK_wifiState': 'online' if online else 'ready' if connected else 'idle',
         'LINK_linkState': 'wifi' if connected else '', 'LINK_wifiOnlineCheckFailure': not online,
         'WIFI_connected': connected, 'WIFI_powered': connected,
         'WIFI_network': 'Local lab network', 'WIFI_address': current['ip'],
@@ -109,6 +111,7 @@ awake = {'GUI_enableDisplayKeepAlive': True, 'VAPI_driverPresent': True,
 if os.environ.get('TESLA_NATIVE_CAR_TYPE') == 'ModelS':
     awake |= {'VAPI_driveRailOn': True, 'VAPI_accRailOn': True}
 writers, owners, request_baseline = {}, {}, {}
+media_writers, media_owners, media_network_report = {}, {}, {}
 controls = Simulation()
 control_report, service_report, service_details, errors = {}, {}, {}, {}
 volume_max, distance_units = {}, {}
@@ -119,12 +122,27 @@ last_gps = None
 last_network_stamp = None
 service_dirty = True
 last_source = 'defaults'
+indicator_direction, indicator_since = 'off', time.monotonic()
+body_router = BodyRequestRouter()
 
 while True:
     tick = time.monotonic()
     try:
         if tick >= next_inventory:
             next_inventory = tick + .5
+            for service in MEDIA_NETWORK_SERVICES:
+                try:
+                    owner = str(bus.get_name_owner(service)) if bus.name_has_owner(service) else None
+                    if not owner:
+                        media_writers.pop(service, None)
+                        media_owners.pop(service, None)
+                        media_network_report.pop(service, None)
+                    elif media_owners.get(service) != owner:
+                        iface = dbus.Interface(bus.get_object(service, '/LocalDataValue'), 'com.tesla.LocalDataValue')
+                        media_writers[service], media_owners[service] = DisplayWriter(iface, typed), owner
+                        next_network = 0
+                except dbus.DBusException as exc:
+                    errors[service] = str(exc)
             for service in services:
                 try:
                     owner = str(bus.get_name_owner(service)) if bus.name_has_owner(service) else None
@@ -134,6 +152,8 @@ while True:
                         control_report.pop(service, None)
                         service_report.pop(service, None)
                         service_details.pop(service, None)
+                        if service == 'com.tesla.CenterDisplay':
+                            body_router = BodyRequestRouter()
                         continue
                     if owners.get(service) != owner:
                         iface = dbus.Interface(bus.get_object(service, '/LocalDataValue'), 'com.tesla.LocalDataValue')
@@ -141,6 +161,8 @@ while True:
                         ok, maximum = writers[service].read('GUI_audioVolumeMax')
                         volume_max[service] = maximum if ok and isinstance(maximum, (float, int)) and maximum > 0 else 10.333
                         request_baseline[service] = {}
+                        if service == 'com.tesla.CenterDisplay':
+                            body_router = BodyRequestRouter()
                         service_dirty = True
                         next_slow = 0
                         next_network = 0
@@ -182,8 +204,7 @@ while True:
                             continue
                         old = baseline.get(name)
                         baseline[name] = value
-                        if field == 'volume_pct':
-                            value = float(value) / volume_max[service] * 100
+                        value = decode_service_request(field, value, volume_max[service])
                         if changed_config:
                             continue
                         if old is None or not equivalent(old, baseline[name]):
@@ -198,9 +219,16 @@ while True:
                 updated = model.patched(changes)
                 if updated != model:
                     model, service_dirty, last_source = updated, True, 'native-ui'
+            center_writer = writers.get('com.tesla.CenterDisplay')
+            if center_writer:
+                updated = body_router.poll(center_writer.interface, model, typed, desktop_changed=changed_config)
+                if updated != model:
+                    model, service_dirty, last_source = updated, True, 'native-ui'
 
         controls = Simulation.parse(read_json('controls.json', {}))
         current_controls = controls.as_dict()
+        if controls.indicator != indicator_direction:
+            indicator_direction, indicator_since = controls.indicator, tick
         if snapshot.get('checked_at') != last_network_stamp:
             next_network = 0
         replay = read_json('replay-status.json', {}) or {}
@@ -214,8 +242,11 @@ while True:
             try:
                 if current_controls != last_controls or tick >= next_slow:
                     driving = driving_values(controls)
+                    driving['indicator'] = indicator_values(controls.indicator, tick - indicator_since)
                     driving['speed_kph'] = speed_display_values(controls.speed_kph, distance_units.get(service, 'Miles'))
                     control_report[service], _ = writer.apply(driving, verify_cached=tick >= next_slow)
+                indicator_report, _ = writer.apply({'indicator': indicator_values(controls.indicator, tick - indicator_since)})
+                control_report.setdefault(service, {}).update(indicator_report)
                 if (current_gps != last_gps or tick >= next_slow) and gps:
                     gps_signals = {k: v for k, v in display_values(gps).items()
                                    if k in ('latitude_deg', 'longitude_deg', 'heading_deg')}
@@ -245,6 +276,13 @@ while True:
         if tick >= next_slow:
             next_slow = tick + 2
         if tick >= next_network:
+            for service, writer in tuple(media_writers.items()):
+                try:
+                    _, detail = writer.apply({'network': media_network_values(snapshot)}, verify_cached=True)
+                    media_network_report[service] = detail['network']
+                    errors.pop(service, None)
+                except (dbus.DBusException, ValueError, TypeError) as exc:
+                    errors[service] = str(exc)
             next_network = tick + 30
             last_network_stamp = snapshot.get('checked_at')
         if tick >= next_report:
@@ -254,8 +292,11 @@ while True:
                                                    'apply_duration_ms': round((time.monotonic()-tick)*1000, 1)})
             atomic_json('vehicle-services-feedback.json', {
                 'state': model.as_dict(), 'requested': model.as_dict(), 'source': last_source,
+                'config_mtime_ns': config_stamp,
                 'firmware': service_report, 'signals': service_details, 'capabilities': CAPABILITIES,
                 'gps_source': 'dashcam' if gps else 'desktop', 'errors': errors, 'updated_at': now,
+                'media_network': media_network_report,
+                'body_requests': body_router.report,
             })
             next_report = tick + .5
     except (dbus.DBusException, OSError, ValueError, TypeError) as exc:

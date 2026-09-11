@@ -4,7 +4,7 @@ import pytest
 from infotainment_lab.vehicle_services import (
     CAPABILITIES, FIELD_SPECS, DisplayWriter, PreferenceSync, VehicleServices,
     decode_value, display_values, speed_display_values,
-    replay_location, equivalent,
+    replay_location, equivalent, PREFERENCES, CENTER_CHANNELS, media_network_values,
 )
 
 
@@ -100,6 +100,31 @@ def test_registered_but_unset_preferences_receive_the_valid_peer_value():
     assert sync.choose("timezone", None, "Asia/Shanghai") == ("cluster", "Asia/Shanghai", False)
 
 
+def test_santa_can_be_enabled_disabled_and_survive_either_display_restart():
+    name = 'GUI_HoHoHoMode'
+    assert name in PREFERENCES
+    sync = PreferenceSync()
+    sync.choose(name, 0, 0)
+    assert sync.choose(name, 1, 0) == ('center', 1, False)
+    sync.accepted(name, 1)
+    assert sync.choose(name, 1, 0, {'cluster'}) == ('center', 1, False)
+    assert sync.choose(name, 0, 1, {'center'}) == ('cluster', 1, False)
+    assert sync.choose(name, 0, 1) == ('center', 0, False)
+    sync.accepted(name, 0)
+    assert sync.choose(name, 0, 0) == (None, 0, False)
+
+
+def test_playback_is_center_owned_and_empty_strings_clear_instrument_metadata():
+    sync = PreferenceSync()
+    for name in CENTER_CHANNELS:
+        assert sync.choose(name, 'new', 'stale', {'center'}) == ('center', 'new', False)
+        assert sync.choose(name, None, 'stale') == (None, None, False)
+        assert sync.choose(name, '', 'stale') == ('center', '', False)
+    display = FakeDisplay()
+    display.values['title'] = ''
+    assert DisplayWriter(display).read('title') == (True, '')
+
+
 class FakeDisplay:
     def __init__(self):
         self.values = {"speed": 0.0, "mute": False, "rejected": 0.0, "ignored": 0.0}
@@ -164,6 +189,20 @@ def test_decoder_preserves_boolean_and_drops_invalid_values():
     assert decode_value("<invalid>") is None
     assert decode_value("nan") is None
     assert decode_value("Miles") == "Miles"
+
+
+def test_media_network_clears_online_state_after_connectivity_is_lost():
+    online = media_network_values({'online': True, 'ip': '192.0.2.1'})
+    local_only = media_network_values({'online': False, 'ip': '192.0.2.1'})
+    offline = media_network_values({'online': False, 'ip': ''})
+    assert online['CONN_connectedToInternet'] is True
+    assert online['LINK_wifiState'] == 'online'
+    assert local_only['CONN_connectedToInternet'] is False
+    assert local_only['CONN_wifiConnected'] is True
+    assert local_only['LINK_wifiState'] == 'ready'
+    assert offline['CONN_wifiConnected'] is False and offline['LINK_linkState'] == ''
+    assert offline['LINK_wifiState'] == 'idle'
+    assert not any(name.startswith(('AUTH_', 'VAPI_', 'CAPI_')) for name in online)
 
 
 def test_replay_gps_requires_committed_fresh_frame_and_respects_takeover():

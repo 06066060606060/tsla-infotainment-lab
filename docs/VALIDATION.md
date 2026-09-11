@@ -1,5 +1,85 @@
 # Validation record
 
+## Version 0.4.1: fonts, display channels and native music (2026-09-10)
+
+- Linux: 152 tests passed. Windows: 132 passed, 20 Linux-specific checks skipped.
+- The native compositor left `GL_UNPACK_ALIGNMENT=1` in Qt's shared context.
+  Restoring its previous value after the 3D upload removed the diagonal/striped
+  text corruption in the live center Software/Controls pages and cluster alerts.
+  A compiled regression harness checks alignments 1, 2, 4 and 8, including upload errors.
+- Both running Qt processes mapped Universal Sans font files from the selected
+  firmware mount. A session-only Fontconfig configuration points to that image,
+  its supplied CJK rules and a private cache. `fc-match` selected Universal Sans
+  Text 530 for the named family and Noto Sans CJK SC for simplified Chinese.
+  No font payload was copied into the repository or installed into host font folders.
+  Fresh native captures show readable [center controls](screenshots/native-fonts-center.png)
+  and [cluster warning text alongside the 3D car](screenshots/native-fonts-cluster.png).
+- On the running MCU2 session, changing only the center's Santa field to 1 and
+  then 0 produced matching instrument readbacks in both cases. The original
+  value was restored. Shared-field polling reported 23 synchronized values and
+  no field errors in the default session.
+- The supervisor launches the supplied Spotify service, ChromiumAdapter,
+  media-webapp-server and a separate ChromiumApp profile. The local HTTP service
+  returned 200 and its WebSocket connection to the adapter was observed.
+- Measured host connectivity is forwarded to the media services. Using the
+  firmware's expected `online` Wi-Fi state changed the native Spotify SDK from
+  None to Wireless, with `SPOTIFY_sdkHasConnectivity=true`; it remained true
+  after a complete session restart.
+- Automated checks cover Santa enable/disable and peer restart reconciliation,
+  one-way playback metadata clearing, real exported wheel-action names,
+  consecutive volume requests, hold cancellation, native indicator phases, media-port
+  conflicts and bounded service recovery.
+- After the desktop was unlocked, clicking Santa in the actual center window
+  produced the sleigh, reindeer, tree, snowman and falling snow in the Windows
+  instrument window. The Chinese wheel panel loaded. Volume + and Volume −
+  changed the shared volume by five percentage points and restored it; a native
+  instrument volume popup was captured alongside Santa.
+  Switching Santa off in the center restored the ordinary car visualization.
+- A live Qt hold through the real backend increased native volume from 20% to
+  35% during a 1.4-second press. Volume stayed at 35% after release and the
+  original level was restored. Left, right, hazard and Off selections produced
+  the expected steady direction and alternating lamp states on both displays.
+  Lamp values were sampled twice to exclude reads straddling a phase transition.
+  Selecting Hazards in the reopened Chinese desktop panel displayed both green
+  arrows in the actual Windows instrument window; [native capture](screenshots/cluster-indicators.png).
+- The supplied music web app includes Spotify, Apple Music, Amazon Music,
+  Audible and other player assets. The bundled Chromium directory includes
+  WidevineCdm; presence alone does not establish DRM playback. `ldd` found no
+  unresolved libraries for SpotifyServer or ChromiumAdapter in their launch
+  environment. A second audit, informed by the earlier Chromium research,
+  found the actual policies under `etc/apparmor.compiled`. The Spotify,
+  ChromiumAdapter, Chromium, media-webapp-server and QtCar policy blobs are
+  nonempty. The empty `sandbox.d` entries do not establish missing policies.
+  After an authorized WSL restart, AppArmor reports enabled. The unchanged
+  Spotify policy loaded in a disposable policy namespace, which was then removed
+  without attaching a task. Complete service confinement remains unresolved.
+- The media browser now carries the vendor's secure-context declaration for
+  its one loopback media origin and loads the supplied ChromiumApp policy path.
+  An isolated test with the same firmware Chromium and a local HTML page
+  reported `isSecureContext=false` and no EME API without the declaration;
+  both became true with it. This establishes API availability, not successful
+  CDM initialization, login or licensed playback. The firmware browser does
+  not support the headless Ozone platform; this check used its normal X11 mode.
+- Live checks verified each of the six closure position flags on both displays.
+  The [native instrument capture](screenshots/cluster-doors.png) shows all four
+  doors, the hood and the hatch open in the 3D view. Clicking Open for the rear
+  trunk in the real center window opened it in the instrument window. Clicking
+  Lock changed the native button to Unlock and the shared model to locked.
+- Off, Parking, On and Auto/day/dark cases produced matching headlight states on
+  both displays. The native parking mode uses the enum name ParkingLights;
+  the desktop translates its Parking choice at that boundary. Clicking Off in
+  the actual center changed both headlight and parking-light states to false.
+- The normal Software page was reached for Service Mode. The manual long-press
+  entry step remains unverified; no diagnostic-access state was forced.
+- Spotify still failed in the real center window. Its native publishers first
+  lacked `/tmp/dvaccess`; creating a user-owned private directory exposed the
+  next failure: the center rejects SpotifyServer and ChromiumAdapterService
+  peers with `[PEERSEC] Incorrect security profile`. The media app remains
+  unavailable despite HTTP/WebSocket and SDK connectivity. The control panel
+  now reports this distinction. No peer-identity check was patched or disabled.
+
+## Version 0.4.0 baseline
+
 Date: 2026-09-09. Host: Windows 11, WSL2 Debian 13, x86_64, AMD Radeon graphics via Mesa D3D12. Firmware: user-provided 2026.26.6.1 MCU2 / `modelsx_info2`. No firmware payload is included in this record.
 
 ## Automated checks

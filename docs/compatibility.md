@@ -1,10 +1,10 @@
 # Compatibility · 兼容性
 
-This matrix describes version **0.4.0** and the local configuration used for
+This matrix describes version **0.4.1** and the local configuration used for
 validation. An imported image's build profile determines whether it can launch.
 The library can inspect images beyond the currently supported launch profile.
 
-此表描述 **0.4.0** 及本地验证环境。设备库可检查更多镜像，但能否启动取决于
+此表描述 **0.4.1** 及本地验证环境。设备库可检查更多镜像，但能否启动取决于
 是否存在匹配的构建适配。
 
 ## Host and firmware
@@ -15,6 +15,7 @@ The library can inspect images beyond the currently supported launch profile.
 | Physical x86_64 Linux | Launch path implemented; not validated on a separate physical host. Requires X11/XWayland, systemd user services and FUSE. |
 | Optional native Windows control panel | Uses the same Debian WSL backend; this is not a Windows firmware runtime. |
 | AMD Radeon / Mesa D3D12 | Observed accelerated renderer on the tested WSLg host. Other GPU configurations remain unverified. |
+| Native fonts | Both Qt displays load Universal Sans from the selected firmware; Fontconfig uses an image-specific font directory and private cache. CJK selection uses the supplied image's rules. |
 | `2026.26.6.1` Model S/X MCU2 (`modelsx_info2`) | Supported exact launch profile, with center display and instrument cluster. |
 | Other firmware builds | Image inspection available; no compatibility claim or automatic fallback to the tested profile. |
 | Maps | A supplied NA image can be inspected/mounted. A street base map rendered after valid replay GPS, in a session without an offline map mounted. Offline NA imagery and routing remain unverified. |
@@ -40,6 +41,7 @@ is made for other systems.
 | Theater | Firmware catalog and YouTube home page | Commercial streaming, DRM playback, account-dependent flows and all catalog apps remain unverified. |
 | Dragging | Embedded page receives motion and a release; draggable tile and range slider exercised at native scale | No universal claim for every website gesture. |
 | Audio | Firmware stream routing and volume/mute control on the host | Physical DSP, microphone/telephony and subjective playback quality are not modeled. |
+| Native music card | Dedicated media web app, ChromiumApp, adapter and Spotify processes run; Spotify SDK reports connectivity | Native service security-context rejection still prevents Spotify login/playback. |
 | Multiple windows | Center, instruments, panel and optional camera preview | Each firmware view remains a separate desktop window; the device overview is view-only. |
 
 Clipboard integration is not included in this release.
@@ -66,14 +68,15 @@ drawtext. See [replay documentation](replay.md).
 | Domain | Local behavior | Limit |
 | --- | --- | --- |
 | Climate | Native requests, shared temperatures, fan, A/C and defrost request | Supplied state; no thermal or compressor physics. |
-| Closures | Door/trunk open indicators and lock status | Individual 3D latch animations are unverified; passenger/rear doors share a general indicator. |
-| Lights | Headlight/high-beam indicators and verified On/Off display fields | No physical lamps. |
+| Closures | Six independent door/trunk positions in both displays and the native 3D view; center lock/unlock and supported closure requests update the local model | No physical actuators; unsupported native request types are not executed. |
+| Lights | Off, Parking, On and Auto with simulated ambient darkness; shared headlight/high-beam/parking indicators | No physical lamps. |
 | Energy | Battery, charge limit, charging state and power | No battery model or charging equipment. |
 | Audio | Shared volume/mute and host audio-stream control | Only the mounted firmware's streams are adjusted. |
 | Navigation | Supplied GPS, heading, destination label and remaining trip metadata; street base map observed after valid replay GPS | Offline NA imagery, route computation and live traffic remain unverified. |
 | Tires | Four editable local pressure values | Native TPMS units remain unverified; pressure is not injected. |
 | Driving state | Same local inputs sent to both displays, with readback | Does not recreate the complete vehicle IPC graph. |
-| Preferences | Bidirectional populated unit/audio fields; registered timezone fields receive a value when available | In this session: eight populated fields, two unset timezone fields and two unsupported clock-format names. |
+| Preferences | Santa, supported theme/wheel and unit/audio preferences; center-owned playback metadata forwarded to instruments | The current default session reports 23 shared values; unsupported fields remain in diagnostics. |
+| Service Mode | Official manual entry instructions and a button to focus the center | Manual long-press entry remains unverified; complete diagnostic services are not implemented. |
 | Vehicle/cloud-only services | Capability report lists unavailable domains | Physical ECU/CAN, powertrain, cellular provisioning, accounts, phone keys, payments and remote services are not connected. |
 
 “Applied” means the display read back the intended value. Unsupported, rejected,

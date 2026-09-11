@@ -54,7 +54,8 @@ def test_park_resets_motion_and_telemetry_has_explicit_units():
     assert values['speed_kph']['VAPI_vehicleSpeed'] == 10
     assert values['speed_kph']['VAPI_displaySpeed'] == 36
     assert values['brake_pct']['VAPI_brakePedal'] is True
-    assert values['indicator'] == {'VAPI_signalLeft': True, 'VAPI_signalRight': True}
+    assert values['indicator']['VAPI_turnSignalActive'] == 'Both'
+    assert values['indicator']['LIGHT_turnIndicatorLeft'] == values['indicator']['LIGHT_turnIndicatorRight'] == 'On'
     assert 20 < moving.turning_radius_m() < 40
 
 

@@ -11,8 +11,8 @@ The model is a desktop simulation. It does not communicate with a vehicle.
 | Domain | Local behavior | Practical limit |
 | --- | --- | --- |
 | Climate | Power, driver/passenger set points, cabin/outside temperature, fan, A/C and rear defrost request | Temperatures are supplied values; no thermal physics or compressor is running. |
-| Closures | Door/trunk open indicators and lock status | Individual 3D latch animation has not been verified. Passenger/rear doors share the native general door-open indicator. |
-| Lights | Headlight and high-beam telemetry | No physical lamps are controlled. |
+| Closures | Individual positions for all four doors and both trunks, native Open/Lock/Unlock requests, and shared lock status | Native instrument 3D opening/closing is verified. Physical latches and powered-actuator timing are not modeled. |
+| Lights | Off, Parking, On and Auto, headlight/high-beam and parking-light indicators | Auto uses the local Dark outside input. No physical lamps are controlled. |
 | Energy | Battery percentage, charging state, power and charge limit | Charging does not increment the battery automatically. |
 | Audio | Volume and mute synchronize across the two displays and firmware audio streams | Only audio streams whose executable belongs to the mounted firmware are changed. |
 | Navigation | Supplied GPS, heading, destination label, remaining distance and time; street base map observed after valid replay GPS | Offline NA imagery, route computation and live traffic remain unverified. |
@@ -36,6 +36,27 @@ applies existing fields on each private display, and reads the values back.
 - `signals`: the individual native fields behind those acknowledgements.
 - `source`: `desktop`, `native-ui` or initial `defaults`.
 - `gps_source`, `capabilities`, `errors` and `updated_at`.
+- `body_requests`: consumption and acknowledgement of native momentary requests.
+
+The native display's door-position flags are supplied together, so changing one
+door preserves the remaining doors. Its named readback is converted to the same
+mask for verification. Momentary native requests are consumed once and reset
+to None; a failed acknowledgement is retried without toggling a trunk again.
+Pending commands from before connection are cleared without executing them.
+
+Exterior-light mode synchronizes from the native selector and desktop panel.
+The legacy Headlights checkbox is a manual override selecting On or Off. In
+Auto, Dark outside determines whether the headlights and parking lights are on.
+
+## Service Mode
+
+The desktop Services page includes the normal touchscreen entry instructions
+and a button to focus the center display. It does not force diagnostic access
+or simulate successful vehicle service routines. Native Service Mode entry has
+not yet been verified in this session. Use Controls → Software, hold MODEL for
+two seconds and enter the public service code in the native prompt; exit through
+the native Exit Service Mode control. This is the touchscreen procedure in
+[Tesla's Model S service manual](https://service.tesla.com/docs/ModelS/ServiceManual/en-au/air/GUID-0DC534D7-A4B8-417F-8E42-DF1560E970C2.html).
 
 During replay, the service model retains manually entered location values.
 The active recording's GPS/heading are in `replay-status.json`, and `gps_source`
@@ -61,6 +82,29 @@ and response volume, timezone and available clock-format fields synchronize in
 both directions. A change on either display updates its peer. If both displays
 change the same field between polls, the center display wins; the report marks
 the conflict. A restarted display receives its live peer's values.
+
+The source update adds Santa mode (`GUI_HoHoHoMode`), its cheer setting,
+supported day/theme options and steering-wheel preferences. Santa is mirrored
+both when enabled and disabled. Playback title, artist, album, elapsed/duration,
+source and status travel from center to instruments. The instruments cannot
+overwrite the player's state; empty metadata clears the previous text. A failed
+field is reported separately and does not stop the remaining channels.
+
+The Controls page provides native media and instrument-panel button actions.
+Consecutive volume presses use the latest pending request until the worker
+acknowledges its file version, so rapid presses do not reuse stale feedback.
+Volume buttons repeat after a 450 ms hold and then every 180 ms, subject to
+backend completion. The UI does not queue repeats behind a pending request.
+Release, pointer leave, focus loss, hiding or disabling the button cancels
+repetition. Other actions fire once per press to avoid repeatedly toggling mute.
+An accepted button command does not assert that a logged-out player started
+playing or that a physical steering-wheel switch was connected.
+
+Turn signals publish both intent booleans and the native `VAPI_turnSignalActive`
+enum (`Off`, `Left`, `Right`, `Both`). The two `LIGHT_turnIndicator*` fields use
+`On`/`Off` values with a shared monotonic clock: 400 ms on, 400 ms off. The active
+direction remains selected throughout blinking. These fields are delivered to
+both displays; individual D-Bus writes are not an atomic multi-display update.
 
 `session/display-link.json` records each field's source, both observed values,
 delivery/readback result, connected displays and routed audio streams. Unsupported
@@ -92,6 +136,10 @@ the firmware logs.
 灯光、电量、充电、音量和导航元数据。在固件内调整空调温度或音量，也会更新
 桌面控制面板。两屏的单位、音量、时区等可用偏好双向同步；同时发生冲突时，
 以中控为准，并记录冲突。
+
+源码更新增加 Santa 开关、相关主题与方向盘偏好同步。播放曲目、进度和状态由
+中控单向传给仪表，清空内容也会同步。方向盘按钮调用原生媒体和仪表面板接口；
+连续音量按键会保留尚未回报的最新输入。
 
 “已接收”表示固件本地数据接口回读了写入值，不等于接通真实硬件服务。
 车门目前提供打开提示和锁定状态，逐门 3D 锁扣动画仍未验证；胎压目前仅保存在

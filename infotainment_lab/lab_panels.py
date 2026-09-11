@@ -44,6 +44,7 @@ class BrowserPanel(Panel):
             self.buttons.append(button)
         self.layout.addLayout(row)
         self.health = self.text('', '', 'notice')
+        self.media_health = self.text('', '', 'notice')
         self.text('In the browser check page, drag the slider, select text and move the tile. Use a parked simulation for video playback.',
                   '在浏览器测试页内可拖动滑块、选择文字和移动方块。播放影院视频时请使用驻车模拟状态。')
         self.layout.addStretch()
@@ -65,6 +66,17 @@ class BrowserPanel(Panel):
         for button in self.buttons: button.setEnabled(live and components.get('chromium') == 'running')
         modes = [('chromium', 'Browser', '浏览器'), ('chromium-card', 'Card', '卡片'), ('chromium-theater', 'Theater', '影院')]
         self.health.setText('  ·  '.join(self.tr2(en, zh) + (' ●' if live and components.get(key) == 'running' else ' ○') for key, en, zh in modes))
+        media = session.get('media', {}).get('state')
+        self.media_health.setVisible(live and media not in (None, 'disabled'))
+        if media == 'peer-profile-rejected':
+            self.media_health.setText(self.tr2(
+                'Spotify is unavailable: the firmware rejected the media process security profile. This environment needs a compatible native service sandbox.',
+                'Spotify 暂不可用：固件拒绝了媒体进程的安全配置，需要兼容的原生服务隔离环境。'))
+        elif media == 'waiting-services':
+            self.media_health.setText(self.tr2('Starting native music services…', '正在启动原生音乐服务…'))
+        else:
+            self.media_health.setText(self.tr2('Music services are running. Open Spotify in the center display to check login and playback.',
+                                               '音乐服务进程已启动。请在中控内检查 Spotify 登录和播放。'))
 
 
 class ReplayPanel(Panel):
@@ -163,10 +175,16 @@ class ServicesPanel(Panel):
             for name, spec in FIELD_SPECS.items():
                 if spec['group'] != group: continue
                 value = defaults[name]
-                if spec['type'] == 'bool':
+                if spec.get('choices'):
+                    widget = QComboBox()
+                    for index, choice in enumerate(spec['choices']):
+                        widget.addItem(spec['choices_zh'][index] if window.zh else choice, choice)
+                    widget.setCurrentIndex(widget.findData(value))
+                    widget.currentIndexChanged.connect(lambda _, n=name: self.field_changed(n))
+                elif spec['type'] == 'bool':
                     widget = QCheckBox()
                     widget.setChecked(value)
-                    widget.toggled.connect(lambda _, n=name: self.dirty.add(n))
+                    widget.toggled.connect(lambda _, n=name: self.field_changed(n))
                 elif spec['type'] == 'str' or spec.get('nullable'):
                     widget = QLineEdit('' if value is None else str(value))
                     widget.setPlaceholderText(self.tr2('Unset', '未设置'))
@@ -195,6 +213,11 @@ class ServicesPanel(Panel):
         self.feedback = self.text('', '', 'notice')
         self.text('The local model covers climate, body indicators, energy, audio and trip data. Tire pressure remains a local value. Connected accounts, physical vehicle hardware and live traffic require their own services.',
                   '本地模型包含空调、车身提示、电量、声音和行程数据。胎压目前保存在本地。账号、真实车辆硬件与实时路况需要对应服务。')
+        self.text('Service Mode', 'Service Mode', 'subtitle')
+        self.text('On the center display, open Controls → Software. Hold MODEL for two seconds, then enter service in the native access-code box. Use Exit Service Mode in the native menu to leave.',
+                  '在中控打开 Controls → Software，长按 MODEL 两秒，然后在原生输入框内输入 service。退出时使用原生菜单中的 Exit Service Mode。')
+        self.layout.addWidget(window.button('Show center display', '显示中控屏',
+                                            lambda: window.bridge.call('focus', '--display', 'center')))
         self.layout.addStretch()
 
     def apply(self):
@@ -210,8 +233,27 @@ class ServicesPanel(Panel):
         except ValueError:
             self.window.show_message(self.tr2('Enter a valid number for location and heading.', '请为位置与航向输入有效数字。'), True)
 
+    def field_changed(self, name):
+        self.dirty.add(name)
+        if name not in ('headlights', 'exterior_light_mode', 'ambient_dark'):
+            return
+        mode = self.widgets['exterior_light_mode']
+        headlight = self.widgets['headlights']
+        if name == 'headlights':
+            mode.blockSignals(True)
+            mode.setCurrentIndex(mode.findData('On' if headlight.isChecked() else 'Off'))
+            mode.blockSignals(False)
+            self.dirty.add('exterior_light_mode')
+        else:
+            enabled = mode.currentData() == 'On' or (mode.currentData() == 'Auto' and self.widgets['ambient_dark'].isChecked())
+            headlight.blockSignals(True)
+            headlight.setChecked(enabled)
+            headlight.blockSignals(False)
+            self.dirty.discard('headlights')
+
     def field_value(self, name):
         widget, spec = self.widgets[name], FIELD_SPECS[name]
+        if isinstance(widget, QComboBox): return widget.currentData()
         if spec['type'] == 'bool': return widget.isChecked()
         if spec['type'] == 'str': return widget.text()
         if spec.get('nullable'): return float(widget.text()) if widget.text().strip() else None
@@ -237,6 +279,7 @@ class ServicesPanel(Panel):
             widget = self.widgets[name]
             widget.blockSignals(True)
             if isinstance(widget, QLineEdit): widget.setText(value)
+            elif isinstance(widget, QComboBox): widget.setCurrentIndex(widget.findData(value))
             elif isinstance(widget, QCheckBox): widget.setChecked(value)
             else: widget.setValue(value)
             widget.blockSignals(False)
@@ -264,6 +307,7 @@ class ServicesPanel(Panel):
                 value = state[name]
                 widget.blockSignals(True)
                 if isinstance(widget, QCheckBox): widget.setChecked(value)
+                elif isinstance(widget, QComboBox): widget.setCurrentIndex(widget.findData(value))
                 elif isinstance(widget, QLineEdit): widget.setText('' if value is None else str(value))
                 else: widget.setValue(value)
                 widget.blockSignals(False)
@@ -275,6 +319,6 @@ class ServicesPanel(Panel):
         connected = link.get('connected', {})
         synced = live and connected.get('center') and connected.get('cluster')
         if synced:
-            self.feedback.setText(self.tr2('Center ↔ Instruments', '中控 ↔ 仪表') + '  ·  ' + str(link.get('synchronized_count', 0)) + self.tr2(' shared preferences synchronized', ' 项偏好已同步'))
+            self.feedback.setText(self.tr2('Center ↔ Instruments', '中控 ↔ 仪表') + '  ·  ' + str(link.get('synchronized_count', 0)) + self.tr2(' shared fields synchronized', ' 项数据已同步'))
         else:
             self.feedback.setText(self.tr2('Waiting for both displays to synchronize.', '等待两块屏幕完成同步。') if live else self.tr2('Start a device to use vehicle services.', '启动设备后即可使用车辆服务。'))

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.1 — 2026-09-10
+
+- Fixed striped and scrambled native text by restoring OpenGL unpack alignment after each 3D texture upload, including failed uploads.
+- Resolve center, cluster and firmware browser fonts from the selected image, with a private font cache and the supplied CJK selection rules. No firmware fonts are bundled or installed into the host.
+- Added steering-wheel volume hold/repeat with release and focus-loss cancellation; corrected shared left/right/hazard indicator phases.
+- Connected six door/trunk position flags to both displays and the native 3D view. Center lock/unlock and supported closure requests update the local model.
+- Added Off, Parking, On and Auto light modes, a simulated dark environment, and consistent manual-light controls.
+- Expanded Santa/theme/wheel preference synchronization and center-to-cluster playback metadata. Added native media process recovery, connection diagnostics and the scoped media-browser environment.
+- Updated English and Mandarin setup instructions: users must supply their own compatible Firmware Dump. Firmware, extraction tools and dump/export tutorials are not provided.
+- Still unresolved: native Spotify login/playback and complete media-service confinement. Service Mode manual entry remains unverified. This update does not add physical vehicle or cloud services.
+
+### 中文
+
+- 修复 3D 纹理上传后引起的文字花字，中控、仪表和固件浏览器从当前固件读取字体，字体缓存独立保存。
+- 补齐方向盘音量长按、转向灯闪烁、六个车门／备箱位置、锁车请求和四种灯光模式的本地同步。
+- 改进 Santa 与偏好同步、播放信息转发、媒体服务恢复及错误诊断。
+- 明确需要用户自备 Firmware Dump；不提供固件、提取工具或导出教程。
+- Spotify 原生登录／播放和完整服务隔离仍未修复，Service Mode 手动入口尚未验证。
+
 ## 0.4.0 — 2026-09-09
 
 - Added native Browser, Card view and Theater controls with separate Chromium runtime profiles.

@@ -24,7 +24,7 @@ import time
 from core import PACKAGE, atomic_json, load_json, profile_for, public_report, safe_id, sha256_file, validate_image
 from simulation import Simulation
 from camera_source import source_config, camera_health, FRAME_BYTES, WIDTH, HEIGHT
-from browser import MODES, browser_url
+from browser import MODES, browser_url, media_health
 from replay import replay_request, manual_takeover, controls_lock
 from vehicle_services import VehicleServices, CAPABILITIES
 
@@ -153,6 +153,13 @@ def status() -> dict:
     record['replay'] = load_json(DATA / 'session/replay-status.json', {})
     record['vehicle_services'] = load_json(DATA / 'session/vehicle-services-feedback.json', {})
     record['service_capabilities'] = CAPABILITIES
+    try:
+        with (DATA / 'session/center.log').open('rb') as source:
+            source.seek(max(0, source.seek(0, 2) - 65536))
+            media_log = source.read(65536).decode('utf-8', errors='replace')
+    except OSError:
+        media_log = ''
+    record['media'] = media_health(record.get('components', {}), media_log)
     record['camera'] = camera_health(load_json(DATA / 'session/camera-status.json', {}),
                                      load_json(DATA / 'session/camera-consumer.json', {}),
                                      record.get('phase') in ('starting', 'running', 'degraded'))
@@ -199,7 +206,7 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     # application's temporary extraction directory must not own the session.
     runtime = DATA / "engine"
     runtime.mkdir(parents=True, exist_ok=True)
-    for name in ("supervisor.py", "core.py", "profiles.json", "simulation.py", "camera_source.py", "browser.py", "replay.py", "vehicle_services.py"):
+    for name in ("supervisor.py", "core.py", "profiles.json", "simulation.py", "camera_source.py", "browser.py", "replay.py", "vehicle_services.py", "firmware_fonts.py"):
         shutil.copy2(PACKAGE / name, runtime / name)
     shutil.copytree(PACKAGE / "runtime", runtime / "runtime", dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -251,10 +258,18 @@ def set_replay(payload):
     return request
 
 
+def vehicle_services_state():
+    path = DATA / 'session/vehicle-services.json'
+    feedback = load_json(DATA / 'session/vehicle-services-feedback.json', {})
+    # Repeated wheel presses can arrive before the next feedback report. Keep
+    # the latest request until the runtime acknowledges that file version.
+    if path.exists() and feedback.get('config_mtime_ns') != path.stat().st_mtime_ns:
+        return VehicleServices.parse(load_json(path, {})).as_dict()
+    return VehicleServices.parse(feedback.get('state') or load_json(path, {})).as_dict()
+
+
 def set_vehicle_services(payload):
-    current = load_json(DATA / 'session/vehicle-services-feedback.json', {}).get('state')
-    if current is None: current = load_json(DATA / 'session/vehicle-services.json', {})
-    result = VehicleServices.parse(current).patched(payload).as_dict()
+    result = VehicleServices.parse(vehicle_services_state()).patched(payload).as_dict()
     atomic_json(DATA / 'session/vehicle-services.json', result)
     return result
 
@@ -276,6 +291,17 @@ def open_browser(mode, url=None):
         center.maximizeAppWindow('browser', mode != 'card', timeout=5)
     focus_display('center')
     return {'mode': mode, 'requested': True}
+
+
+def steering_button(action):
+    import dbus
+    from steering import execute
+    config = session_config()
+    bus = dbus.bus.BusConnection((DATA / 'session/dbus-address').read_text().strip())
+    center = dbus.Interface(bus.get_object('com.tesla.CenterDisplay', '/CenterDisplayDbus'), 'com.tesla.CenterDisplayDbus')
+    cluster = (dbus.Interface(bus.get_object('com.tesla.ClusterDisplay', '/ClusterDisplayDbus'),
+                              'com.tesla.ClusterDisplayDbus') if config.get('cluster') else None)
+    return execute(action, center, cluster, vehicle_services_state, set_vehicle_services)
 
 
 def camera_preview():
@@ -377,7 +403,8 @@ def setup(uid: int):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser"))
+    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser", "steering"))
+    parser.add_argument('--button')
     parser.add_argument('--source', choices=('pattern', 'video', 'raw', 'off', 'replay'), default='pattern')
     parser.add_argument('--mode', choices=tuple(MODES), default='browser')
     parser.add_argument('--url')
@@ -403,6 +430,7 @@ def main():
         elif args.action == 'replay': result = set_replay(json.loads(args.payload))
         elif args.action == 'vehicle-services': result = set_vehicle_services(json.loads(args.payload))
         elif args.action == 'browser': result = open_browser(args.mode, args.url)
+        elif args.action == 'steering': result = steering_button(args.button)
         elif args.action in ('preview', 'capture'): result = capture_displays(args.action == 'preview')
         elif args.action == 'focus': result = focus_display(args.display)
         elif args.action == "report": result = public_report(status(), probe())

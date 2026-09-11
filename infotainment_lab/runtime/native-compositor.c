@@ -712,6 +712,19 @@ static unsigned long read_ximage_pixel(x_image *image, int x, int y) {
     return cpu.XGetPixel(image, x, y);
 }
 
+static unsigned int upload_rgba_texture(unsigned int target, int width,
+                                        int height, const void *pixels) {
+    int unpack_alignment = 4;
+    /* Qt shares this context: its padded glyph rows need the original alignment. */
+    cpu.glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpack_alignment);
+    cpu.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    cpu.glTexImage2D(target, 0, GL_RGBA, width, height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    unsigned int error = cpu.glGetError();
+    cpu.glPixelStorei(GL_UNPACK_ALIGNMENT, unpack_alignment);
+    return error;
+}
+
 static bool upload_fake_egl_image_cpu(unsigned int target,
                                       struct fake_egl_image *image) {
     x_image *ximage;
@@ -801,10 +814,7 @@ static bool upload_fake_egl_image_cpu(unsigned int target,
         image->texture_id = (unsigned int)bound_texture;
         register_texture_image(image);
     }
-    cpu.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    cpu.glTexImage2D(target, 0, GL_RGBA, image->width, image->height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    error = cpu.glGetError();
+    error = upload_rgba_texture(target, image->width, image->height, pixels);
     if (error == GL_NO_ERROR) {
         image->last_upload_ms = monotonic_ms();
     }

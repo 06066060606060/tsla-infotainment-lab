@@ -4,9 +4,19 @@
 
 A native Linux desktop application for running and studying infotainment software on your own computer. Drop in a supported firmware image and open the real center display and instrument cluster as desktop windows. The Python/Qt control panel runs directly on Linux or Windows WSLg.
 
-Version **0.4.0** brings embedded Chromium browser/card views, the firmware Theater catalog, local vehicle services, and synchronized dashcam video and driving-data replay. The tested firmware is **2026.26.6.1 · Model S/X · MCU2 (`modelsx_info2`)**.
+Version **0.4.1** fixes corrupted text rendering, uses the selected firmware's own fonts, and improves steering buttons, turn signals, body controls and display synchronization. The tested firmware is **2026.26.6.1 · Model S/X · MCU2 (`modelsx_info2`)**. See the [changelog](CHANGELOG.md) for changes and remaining limitations.
+
+## Bring your own firmware
+
+**This repository and its downloads do not include Tesla firmware.** You must independently obtain or export a compatible **Firmware Dump** that you have permission to use. This project does not provide firmware downloads, extraction tools, or instructions for obtaining or exporting a dump.
+
+Without your own supported dump, you can open the control panel, but you cannot start the infotainment system. Import your dump after setting up the app; fonts and other vehicle assets are read from that image. Optional map packages must also be supplied separately.
 
 ![The native browser workspace running in Debian WSLg](docs/screenshots/browsers-en.png)
+
+<img src="docs/screenshots/native-fonts-center.png" width="350" alt="Version 0.4.1 center controls using the supplied firmware fonts" />
+
+![Instrument cluster with readable native text and the open rear hatch](docs/screenshots/native-fonts-cluster.png)
 
 ## What works
 
@@ -16,12 +26,13 @@ Version **0.4.0** brings embedded Chromium browser/card views, the firmware Thea
 | Device lifecycle | Exact build checks, read-only FUSE mounts, saved launch choices, bounded process recovery, restart and stop. |
 | Multiple windows | Interactive center and instrument displays, control panel and optional camera preview. The toolbar raises either display and exports both as PNGs. |
 | Graphics | Actual host renderer is reported. Tested on AMD Radeon through Mesa D3D12 in WSLg. This MCU2 visualization uses Godot. |
+| Native fonts | Center and cluster use Universal Sans and fallback fonts from your selected firmware. The 3D texture upload preserves Qt's glyph alignment. |
 | Embedded Chromium | Browser and Card views, native Theater catalog, keyboard input, wheel scrolling, text selection and dragging. Runtime status distinguishes the launched Chromium processes. |
 | Internet and storage | Measured host connectivity and real Linux filesystem capacity. Battery starts at a simulated 50% and is editable. |
 | Driving controls | P/R/N/D, dummy speed, accelerator, brake, steering and turn signals. Both displays receive the shared local inputs. |
 | Camera and replay | Test pattern, looping video or an existing RGB24 pipeline feeds the firmware camera. Embedded dashcam telemetry follows the decoded video frame, with pause, seek, speed, loop and manual takeover. |
 | Vehicle services | Local climate, closure indicators, lights, battery/charging, audio and navigation metadata, with per-display readback. Native climate/audio changes feed back to the control panel. |
-| Display synchronization | Shared driving/service state plus bidirectional supported units, audio and time preferences. Unsupported fields remain visible in diagnostics. |
+| Display synchronization | Shared driving/service state, Santa and supported theme/wheel preferences; center-owned playback metadata is sent to the instruments. Unsupported fields remain visible in diagnostics. |
 | Maps | Inspect/mount a supplied NA image. A street base map rendered after replay supplied valid GPS; use of the offline NA package and routing remain unverified. |
 
 Browser/Card interaction and the Theater catalog/YouTube home page have been checked inside the firmware UI. Commercial streaming playback, DRM, sign-in-dependent services and every web application have not been validated. Physical vehicle and cloud-only services are not connected; tire pressures remain values in the local model. See the [compatibility matrix](docs/compatibility.md) for the precise scope.
@@ -37,7 +48,7 @@ On Windows, install Debian with WSL2 and follow Microsoft's [Linux GUI applicati
 1. Extract the complete Linux archive to a permanent folder, keeping `_internal` beside the executable.
 2. On Linux, run `bash Launch-Linux.sh`. On Windows, double-click **Launch-WSL.cmd** in that folder to open the Linux GUI in Debian.
 3. Select **Prepare computer** if setup is needed. The app checks display access, user services, FUSE and runtime packages. Package installation uses Debian/Ubuntu's package manager and its administrator flow.
-4. Drop in `2026.26.6.1.mcu2`, wait for inspection, then select **Start device**. Instrument display, Chromium and map choices are remembered for that image.
+4. Drop in your own supported firmware dump (tested: `2026.26.6.1.mcu2`), wait for inspection, then select **Start device**. Instrument display, Chromium and map choices are remembered for that image.
 5. Use **Center** and **Cluster** on the right toolbar to interact with the firmware windows. **Capture** saves both displays as PNG files.
 
 **Restart** returns manual driving controls to Park; a selected recording waits for Play. **Stop** ends the device session and its workers. Closing the control panel leaves the session, camera and any active replay running. Opening the launcher again brings the existing control panel forward.
@@ -68,6 +79,13 @@ Open **Browsers**, enter an HTTP/HTTPS address and select **Browser** or **Card 
 
 Browser and Card share the same browser app and profile.
 
+The source checkout also starts the firmware's dedicated music browser, media
+web app, adapter and Spotify service. Host connectivity reaches the native
+Spotify SDK. Open Spotify from the center display; an account is still needed
+for playback. On the current WSL host, the firmware rejects the media service
+security context, so Spotify login and playback are still unavailable. The
+Browsers page reports this native connection failure.
+
 The local check page includes a draggable tile, range slider, text selection, audio and WebGL checks. Live validation inside embedded Chromium recorded drag motion and release events and moved the range value from 20 to 85. These checks exercise the firmware's embedded view at its actual display scale.
 
 <img src="docs/screenshots/embedded-browser.png" width="350" alt="Embedded Chromium running inside the center display" /> <img src="docs/screenshots/theater.png" width="350" alt="The running firmware Theater catalog" />
@@ -94,9 +112,27 @@ For the existing pipeline, start its writer and enter its output path, normally 
 
 Select a gear and set dummy speed directly in **Controls**. Park resets speed and accelerator to zero. Pedals are independent inputs, with brake represented as a pressed/released display flag. Steering uses wheel degrees; the illustrative turning radius assumes a 2.96 m wheelbase and 15:1 steering ratio. Native displayed speed is rounded to a whole number in the selected Miles/Kilometers units.
 
+**Steering-wheel buttons** control volume, mute, play/pause and track selection
+through the native player. The right group opens the instrument volume, wiper
+and voice panels. Opening the voice panel does not provide speech recognition.
+Hold Volume + or − for repeated adjustment; releasing, leaving the button or
+switching windows stops repetition. Other buttons issue one action per press.
+Left, right and hazard signals drive the native instrument arrows with an
+800 ms blink cycle; selecting Off clears both lamps.
+
 ![Actual instrument display and 3D rendering](docs/screenshots/cluster.png)
 
+![Santa mode and the native instrument volume popup](docs/screenshots/cluster-santa.png)
+
 **Vehicle services** groups climate, doors, lights, energy, audio, navigation and tire values. Edit the fields and choose **Apply changes**. Each row shows the firmware response. Changing native climate or audio controls updates the same shared model, and supported preferences synchronize from either display.
+
+Each door and trunk now drives its own native 3D position. Center-display trunk
+and lock buttons feed the local model. Exterior lights support Off, Parking, On
+and Auto; Auto follows the **Dark outside** input. The Services page also contains
+the normal Service Mode entry instructions; entry and diagnostic routines remain
+unverified in the lab.
+
+![Native door and trunk positions](docs/screenshots/cluster-doors.png)
 
 ![Local vehicle services and per-field firmware feedback](docs/screenshots/services-en.png)
 

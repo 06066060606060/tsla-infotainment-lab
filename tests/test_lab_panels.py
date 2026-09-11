@@ -37,6 +37,49 @@ def payloads(window, action):
     return [json.loads(args[2]) for args in window.calls if args[0] == action]
 
 
+def test_light_mode_draft_survives_rebuild_and_native_update(window):
+    panel = window.services_panel
+    control = panel.widgets['exterior_light_mode']
+    control.setCurrentIndex(control.findData('Auto'))
+    draft = panel.export_draft()
+    window.rebuild()
+    panel = window.services_panel
+    assert panel.field_value('exterior_light_mode') == 'Auto'
+    assert 'exterior_light_mode' in panel.dirty
+    panel.dirty.clear()
+    panel.update_status({'phase': 'running', 'vehicle_services': {'state': {'exterior_light_mode': 'Parking'}}})
+    assert panel.field_value('exterior_light_mode') == 'Parking'
+
+
+def test_light_controls_keep_a_consistent_draft_when_the_user_changes_modes(window):
+    panel = window.services_panel
+    mode = panel.widgets['exterior_light_mode']
+    mode.setCurrentIndex(mode.findData('Auto'))
+    panel.widgets['ambient_dark'].setChecked(True)
+    assert panel.widgets['headlights'].isChecked()
+    panel.widgets['headlights'].setChecked(False)
+    assert mode.currentData() == 'Off'
+    mode.setCurrentIndex(mode.findData('On'))
+    assert panel.widgets['headlights'].isChecked()
+    assert 'headlights' not in panel.dirty
+
+
+def test_wheel_hold_survives_status_poll_and_stops_after_failure(window):
+    window.session = {'phase': 'running'}
+    window.update_status()
+    button = next(b for b in window.wheel_buttons if b.objectName() == 'wheel_volume_up')
+    button.setDown(True)
+    button.begin_hold()
+    assert window.calls[-1] == ('steering', '--button', 'volume_up')
+    window.bridge.pending.add('steering')
+    window.update_status()
+    assert button.isEnabled() and button.holding
+    window.bridge.pending.discard('steering')
+    window.received('steering', {'ok': False, 'error': 'Instrument disconnected'})
+    assert button.isEnabled() and not button.holding and not button.hold_timer.isActive()
+    assert 'Instrument disconnected' in window.banner.text()
+
+
 def replay_session(**changes):
     replay = {'phase': 'playing', 'duration_seconds': 40, 'position_seconds': 10,
               'rate': 1, 'loop': True,
@@ -60,6 +103,14 @@ def test_browser_buttons_route_the_selected_mode_and_trim_only_url_whitespace(wi
     panel.url.clear()
     panel.buttons[['browser', 'card', 'theater'].index(mode)].click()
     assert window.calls[-1] == ('browser', '--mode', mode)
+
+
+def test_browser_panel_reports_native_media_rejection_without_disabling_browser(window):
+    panel = window.browser_panel
+    panel.update_status({'phase': 'running', 'components': {'chromium': 'running'},
+                         'media': {'state': 'peer-profile-rejected'}})
+    assert all(button.isEnabled() for button in panel.buttons)
+    assert 'security profile' in panel.media_health.text()
 
 
 def test_replay_polling_updates_widgets_without_sending_commands(window):

@@ -14,6 +14,8 @@ flowchart LR
   Supervisor --> CID[Center display / Xephyr]
   Supervisor --> IC[Instruments / Xephyr]
   Supervisor --> Browser[Three firmware Chromium profiles]
+  Supervisor --> Music[Dedicated music Chromium and media workers]
+  Music --> CID
   Supervisor --> Viz[Godot visualization]
   Supervisor --> Page[Loopback browser check page]
   Browser --> CID
@@ -71,7 +73,8 @@ firmware assets use relative paths. The supported MCU2 center canvas is
 1200×1920 at 0.6 scale; the instruments use a separate display.
 
 Recognized first-run configuration restarts have a bounded retry path. Each
-Chromium mode has its own retry counter. Other exits become visible errors or
+Chromium mode has its own retry counter. The music workers and display link
+also have two delayed recovery attempts. Other exits become visible errors or
 degraded component status. Closing a firmware display ends the session. Stop
 terminates the service's cgroup and unmounts this application's FUSE mounts;
 it does not search for and kill unrelated vendor-named processes.

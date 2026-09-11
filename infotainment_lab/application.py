@@ -25,6 +25,8 @@ from .workspace import build_workspace
 from .simulation import Simulation
 from .desktop_instance import DesktopInstance
 from .lab_panels import BrowserPanel, ReplayPanel, ServicesPanel
+from .steering import ACTIONS as STEERING_ACTIONS
+from .hold_button import HoldButton
 
 STYLE = """
 QWidget { background: #0d141c; color: #e6edf3; font-family: 'Noto Sans CJK SC', 'Segoe UI', sans-serif; font-size: 14px; }
@@ -38,6 +40,7 @@ QLabel#metric { font-size: 29px; font-weight: 600; } QLabel#brand { font-size: 2
 QLabel#notice { padding: 12px; background: #1b2d36; border-radius: 8px; color: #a7dfd1; }
 QPushButton { background: #1c2b3a; border: 1px solid #35495a; border-radius: 7px; padding: 11px 18px; font-weight: 550; }
 QPushButton:hover { background: #293f50; border-color: #6b879c; }
+QPushButton:pressed { background: #254a4b; border-color: #68d8b7; }
 QPushButton:checked { background: #254a4b; color: #abf2da; border-color: #68d8b7; }
 QPushButton:disabled { color: #586b7c; background: #17222d; border-color: #223140; }
 QPushButton#primary { background: #68d8b7; color: #102a25; border: 0; }
@@ -384,6 +387,30 @@ class MainWindow(QMainWindow):
         self.control_feedback = label(self.tr2("Start a session to send inputs. Speed is an explicit test value; the pedals do not run a physics model.",
                                                 "启动会话后可发送输入。车速是手动测试值；踏板不驱动物理模型。"), "notice", True)
         layout.addWidget(self.control_feedback)
+        wheel, wheel_layout = card()
+        wheel_layout.addWidget(label(self.tr2('Steering-wheel buttons', '方向盘按钮'), 'subtitle'))
+        pods = QHBoxLayout()
+        self.wheel_buttons = []
+        for side, en, zh in (('left', 'Left · Media', '左侧 · 媒体'), ('right', 'Right · Instruments', '右侧 · 仪表')):
+            pod = QVBoxLayout()
+            pod.addWidget(label(self.tr2(en, zh), 'eyebrow'))
+            grid = QGridLayout()
+            actions = [(key, item) for key, item in STEERING_ACTIONS.items() if item[2] == side]
+            for index, (key, (english, chinese, _)) in enumerate(actions):
+                button = HoldButton(self.tr2(english, chinese), repeat=key in ('volume_up', 'volume_down'))
+                button.triggered.connect(lambda action=key: self.send_steering(action))
+                button.setObjectName('wheel_' + key)
+                grid.addWidget(button, index // 2, index % 2)
+                self.wheel_buttons.append(button)
+            pod.addLayout(grid)
+            pod.addStretch()
+            pods.addLayout(pod, 1)
+        wheel_layout.addLayout(pods)
+        wheel_layout.addWidget(label(self.tr2('Hold Volume + or − to adjust continuously. Release or leave the button to stop.',
+                                             '按住音量＋或－连续调整；松开或移出按钮即停止。'), 'muted', True))
+        wheel_layout.addWidget(label(self.tr2('Media buttons use the active native player. Right buttons open instrument panels; voice recognition needs its own service.',
+                                             '媒体按钮控制当前原生播放器。右侧按钮打开仪表卡片；语音识别仍需要语音服务。'), 'muted', True))
+        layout.addWidget(wheel)
         layout.addStretch()
         self.update_radius()
         return page
@@ -549,11 +576,19 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, self.tr2("Runtime setup", "运行环境安装"), text) == QMessageBox.Yes:
             self.operation("setup")
 
+    def send_steering(self, action):
+        # Drop a repeat while the previous command is in flight. Never queue
+        # held input that could continue applying after the user releases it.
+        self.bridge.call('steering', '--button', action)
+
     def received(self, action, result):
         if action == 'vehicle-services': self.services_panel.acknowledge(bool(result.get('ok')))
         if action in ('start', 'stop', 'restart', 'import', 'setup'):
             self.busy, self.active_action = False, None
         if not result.get('ok'):
+            if action == 'steering':
+                for button in self.wheel_buttons:
+                    button.cancel_hold()
             if action == 'camera-preview': return
             if action == 'preview':
                 self.preview_caption.setText(self.tr2('Preview unavailable · Open a display directly', '预览暂不可用 · 可直接打开显示窗口'))
@@ -578,8 +613,10 @@ class MainWindow(QMainWindow):
             if data.get('mode') == 'replay': self.manual_override = False
             self.show_message(self.tr2('Camera source selected.', '已选择摄像头来源。'))
             self.bridge.call('status')
-        elif action in ('replay', 'vehicle-services', 'browser'):
+        elif action in ('replay', 'vehicle-services', 'browser', 'steering'):
             if action == 'replay' and data.get('action') == 'play': self.manual_override = False
+            if action == 'steering':
+                self.show_message(data.get('warning') or self.tr2('Steering-wheel command sent.', '已发送方向盘按钮指令。'))
             self.bridge.call('status')
         elif action == 'camera-preview':
             frame = QPixmap()
@@ -641,6 +678,8 @@ class MainWindow(QMainWindow):
         phase = self.session.get('phase', 'stopped')
         live = phase in ('starting', 'running', 'degraded')
         usable = phase in ('running', 'degraded')
+        for button in getattr(self, 'wheel_buttons', []):
+            button.setEnabled(usable)
         self.browser_panel.update_status(self.session)
         self.replay_panel.update_status(self.session)
         self.services_panel.update_status(self.session)

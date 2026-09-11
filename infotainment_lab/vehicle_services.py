@@ -8,6 +8,18 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 
+DOOR_FLAGS = ('DriverFront', 'PassengerFront', 'DriverRear', 'PassengerRear', 'TrunkFront', 'TrunkRear')
+
+
+def decode_door_mask(raw):
+    """The native flag value reads back as names, including empty for zero."""
+    if raw == '':
+        return 0
+    parts = str(raw).split('|')
+    if any(name not in DOOR_FLAGS for name in parts):
+        return None
+    return sum(1 << DOOR_FLAGS.index(name) for name in set(parts))
+
 
 @dataclass
 class VehicleServices:
@@ -27,6 +39,8 @@ class VehicleServices:
     rear_trunk_open: bool = False
     locked: bool = False
     headlights: bool = False
+    exterior_light_mode: str = 'Off'
+    ambient_dark: bool = False
     high_beams: bool = False
     battery_percent: float = 50
     charge_limit_pct: float = 80
@@ -49,6 +63,9 @@ class VehicleServices:
     def parse(cls, value: dict) -> "VehicleServices":
         if not isinstance(value, dict) or set(value) - set(FIELD_SPECS):
             raise ValueError("Unknown vehicle service field.")
+        value = dict(value)
+        if 'exterior_light_mode' not in value:
+            value['exterior_light_mode'] = 'On' if value.get('headlights') is True else 'Off'
         result = cls(**value)
         for name, spec in FIELD_SPECS.items():
             raw = getattr(result, name)
@@ -60,6 +77,8 @@ class VehicleServices:
             elif spec["type"] == "str":
                 if not isinstance(raw, str) or len(raw) > 160 or any(ord(c) < 32 for c in raw):
                     raise ValueError(f"{name} must be a single line of at most 160 characters.")
+                if spec.get('choices') and raw not in spec['choices']:
+                    raise ValueError(f'{name} has an unsupported selection.')
             else:
                 if isinstance(raw, bool):
                     raise ValueError(f"{name} must be a number.")
@@ -74,6 +93,7 @@ class VehicleServices:
                 setattr(result, name, int(number) if spec["type"] == "int" else number)
         if (result.latitude_deg is None) != (result.longitude_deg is None):
             raise ValueError("Latitude and longitude must be supplied together.")
+        result.headlights = result.exterior_light_mode == 'On' or (result.exterior_light_mode == 'Auto' and result.ambient_dark)
         return result
 
     def as_dict(self) -> dict:
@@ -82,6 +102,11 @@ class VehicleServices:
     def patched(self, patch: dict) -> "VehicleServices":
         if not isinstance(patch, dict):
             raise ValueError("Vehicle service changes must be an object.")
+        patch = dict(patch)
+        if 'headlights' in patch and 'exterior_light_mode' not in patch:
+            if type(patch['headlights']) is not bool:
+                raise ValueError('headlights must be true or false.')
+            patch['exterior_light_mode'] = 'On' if patch['headlights'] else 'Off'
         return self.parse(self.as_dict() | patch)
 
 
@@ -106,7 +131,10 @@ FIELD_SPECS = {
     "front_trunk_open": _field("closures", "Front trunk open", "前备箱打开", "bool"),
     "rear_trunk_open": _field("closures", "Rear trunk open", "后备箱打开", "bool"),
     "locked": _field("closures", "Doors locked", "车门锁定", "bool"),
-    "headlights": _field("lights", "Headlights", "前照灯", "bool"),
+    "headlights": _field("lights", "Headlights (manual override)", "前照灯（手动覆盖）", "bool"),
+    "exterior_light_mode": _field("lights", "Exterior lights", "车外灯光", "str",
+                                  choices=('Off', 'Parking', 'On', 'Auto'), choices_zh=('关闭', '示宽灯', '开启', '自动')),
+    "ambient_dark": _field("lights", "Dark outside (Auto lights)", "环境较暗（自动车灯）", "bool"),
     "high_beams": _field("lights", "High beams", "远光灯", "bool"),
     "battery_percent": _field("energy", "Battery (%)", "电量 (%)"),
     "charge_limit_pct": _field("energy", "Charge limit (%)", "充电上限 (%)", low=50, high=100),
@@ -127,7 +155,7 @@ FIELD_SPECS = {
 
 CAPABILITIES = {
     "climate": {"mode": "local-display", "detail": "Climate requests and temperature/fan telemetry; no thermal physics."},
-    "closures": {"mode": "local-display", "detail": "Door/trunk open indicators and lock status; individual 3D latch animation is unverified."},
+    "closures": {"mode": "local-display", "detail": "Individual door/trunk display positions, native body requests and lock status; no physical actuators."},
     "lights": {"mode": "local-display", "detail": "Headlight/high-beam indicators and lighting telemetry."},
     "energy": {"mode": "local-display", "detail": "Battery and charging telemetry; no battery or charging-station model."},
     "audio": {"mode": "host-backed", "detail": "Volume and mute for firmware audio streams on the host."},
@@ -143,6 +171,10 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
     """Return only observed desktop fields; workers check support and readback."""
     v = model
     open_door = any((v.driver_door_open, v.passenger_door_open, v.rear_left_door_open, v.rear_right_door_open))
+    closure_fields = ('driver_door_open', 'passenger_door_open', 'rear_left_door_open',
+                      'rear_right_door_open', 'front_trunk_open', 'rear_trunk_open')
+    door_mask = sum(1 << index for index, field in enumerate(closure_fields) if getattr(v, field))
+    parking = v.exterior_light_mode == 'Parking' or v.headlights
     result = {
         "climate_on": {"GUI_hvacOnRequest": v.climate_on, "GUI_hvacOnRequestForIC": v.climate_on,
                        "VAPI_hvacRailOn": v.climate_on, "HVAC_powerState": "On" if v.climate_on else "Off"},
@@ -168,6 +200,9 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
                        "LIGHT_headlightLeft": "On" if v.headlights else "Off", "LIGHT_headlightRight": "On" if v.headlights else "Off"},
         "high_beams": {"VAPI_highBeamLights": v.high_beams, "LIGHT_highBeamLeft": "On" if v.high_beams else "Off",
                        "LIGHT_highBeamRight": "On" if v.high_beams else "Off"},
+        "exterior_light_mode": {"GUI_lightSwitchRequest": 'ParkingLights' if v.exterior_light_mode == 'Parking' else v.exterior_light_mode, "VAPI_parkingLights": parking,
+                                "LIGHT_parkingLeft": "On" if parking else "Off", "LIGHT_parkingRight": "On" if parking else "Off"},
+        "ambient_dark": {},
         "battery_percent": {"VAPI_batteryLevel": v.battery_percent, "VAPI_usableBatteryLevel": v.battery_percent},
         "charge_limit_pct": {"GUI_chargeLimitRequest": v.charge_limit_pct},
         "charging": {"VAPI_isCharging": v.charging, "GUI_chargeSessionActive": v.charging},
@@ -179,6 +214,8 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "nav_eta_min": {"GUI_navSecondsToNextDestination": v.nav_eta_min * 60},
         **{name: {} for name in ("tire_fl_bar", "tire_fr_bar", "tire_rl_bar", "tire_rr_bar")},
     }
+    for field in closure_fields:
+        result[field]['VAPI_doorState'] = door_mask
     if v.latitude_deg is not None and v.longitude_deg is not None:
         result["latitude_deg"] = {"LOC_geoLat": v.latitude_deg, "NAV_vehicleLatitude": v.latitude_deg, "LOC_geoValidFix": True}
         result["longitude_deg"] = {"LOC_geoLon": v.longitude_deg, "NAV_vehicleLongitude": v.longitude_deg}
@@ -198,12 +235,96 @@ REQUEST_FIELDS = {
     "ac_on": "GUI_hvacACOnRequest", "rear_defrost": "GUI_hvacRearDefrostRequest",
     "charge_limit_pct": "GUI_chargeLimitRequest", "muted": "GUI_muteAudioRequest",
     "volume_pct": "GUI_audioVolume",
+    "exterior_light_mode": "GUI_lightSwitchRequest",
 }
+
+
+def decode_service_request(field, value, volume_max=10.333):
+    if field == 'volume_pct':
+        return float(value) / volume_max * 100
+    if field == 'exterior_light_mode' and value == 'ParkingLights':
+        return 'Parking'
+    return value
+
+
+BODY_REQUESTS = {
+    'GUI_frontTrunkRequest': 'front_trunk_open', 'GUI_rearTrunkRequest': 'rear_trunk_open',
+    'GUI_frontDoorDriverRequest': 'driver_door_open', 'GUI_frontDoorPassengerRequest': 'passenger_door_open',
+    'GUI_falconDoorDriverRequest': 'rear_left_door_open', 'GUI_falconDoorPassengerRequest': 'rear_right_door_open',
+    'GUI_lockRequest': 'locked',
+}
+
+
+class BodyRequestRouter:
+    """Consume momentary center-display commands into the local model once."""
+    def __init__(self):
+        self.observed = {}
+        self.pending_ack = set()
+        self.report = {}
+
+    def poll(self, interface, model, typed=lambda value: value, desktop_changed=False):
+        for name, field in BODY_REQUESTS.items():
+            try:
+                ok, raw = interface.DataGetValueRequest(name, timeout=.3)
+                if not ok:
+                    continue
+                value = str(raw)
+                previous = self.observed.get(name)
+                self.observed[name] = value
+                if value in ('None', '<invalid>', ''):
+                    self.pending_ack.discard(name)
+                    if self.report.get(name) in ('transport-error', 'ack-pending'):
+                        self.report[name] = 'idle'
+                    continue
+                if previous is None:
+                    # A request left over before connecting is not a new click.
+                    self.pending_ack.add(name)
+                    self.report[name] = 'stale-request-cleared'
+                elif value != previous:
+                    if field == 'locked':
+                        desired = {'Lock': True, 'Unlock': False}.get(value)
+                    elif name in ('GUI_frontTrunkRequest', 'GUI_rearTrunkRequest'):
+                        desired = not getattr(model, field) if value == 'Pressed' else False if value == 'Close' else None
+                    else:
+                        desired = {'Open': True, 'Close': False}.get(value)
+                    if desired is None:
+                        self.report[name] = 'unsupported-request'
+                        continue
+                    if not desktop_changed:
+                        model = model.patched({field: desired})
+                    self.report[name] = 'superseded' if desktop_changed else 'accepted-local-model'
+                    self.pending_ack.add(name)
+                if name in self.pending_ack:
+                    if interface.DataSetValueRequest(name, typed('None'), timeout=.3):
+                        self.pending_ack.discard(name)
+                        self.observed[name] = 'None'
+                        if self.report.get(name) in ('transport-error', 'ack-pending'):
+                            self.report[name] = 'acknowledged'
+                    else:
+                        self.report[name] = 'ack-pending'
+            except Exception:
+                # A failed acknowledgement is retried without replaying a toggle.
+                self.report[name] = 'transport-error'
+        return model
 
 PREFERENCES = (
     "GUI_distanceUnits", "GUI_temperatureUnits", "GUI_chargeUnits", "GUI_tirePressureUnits",
     "GUI_audioVolume", "GUI_muteAudioRequest", "GUI_navAudioVolume", "GUI_responseAudioVolume",
     "GUI_timeZoneId", "GUI_timeZoneOffset", "GUI_clockFormat", "GUI_timeFormat",
+    "GUI_HoHoHoMode", "GUI_HoHoHoModeSpreadCheerExternally", "GUI_007Mode",
+    "GUI_dayMode", "GUI_dayModeOverride", "GUI_scrollWheelMode",
+    "GUI_steeringWheelControlsMode", "GUI_steeringWheelHeatAutoRequest",
+    "GUI_steeringWheelHeatLevelRequest", "GUI_steeringWheelHeaterRequest",
+    "GUI_steeringWheelLightingRequest",
+    "GUI_rainbowAutosteer", "GUI_apVizUIModeOverride",
+)
+
+# Playback belongs to the center display. Never send stale instrument metadata
+# back into the active player. Keep navigation and view-local state separate.
+CENTER_CHANNELS = (
+    'GUI_nowPlayingTitle', 'GUI_nowPlayingArtist', 'GUI_nowPlayingAlbum',
+    'GUI_nowPlayingStation', 'GUI_nowPlayingDuration', 'GUI_nowPlayingElapsed',
+    'GUI_nowPlayingSeekable', 'GUI_mediaCurrentStatus', 'GUI_mediaNowPlayingSource',
 )
 
 
@@ -230,12 +351,31 @@ def equivalent(left, right) -> bool:
     return left == right
 
 
+MEDIA_NETWORK_SERVICES = ('com.tesla.SpotifyServer', 'com.tesla.ChromiumAdapterService')
+
+
+def media_network_values(snapshot):
+    """Forward measured desktop connectivity without granting account access."""
+    connected = bool(snapshot.get('ip'))
+    online = bool(snapshot.get('online')) and connected
+    return {'CONN_connectedToInternet': online,
+            'CONN_wifiConnected': connected,
+            'LINK_linkState': 'wifi' if connected else '',
+            # This firmware's native Spotify player expects "online" here;
+            # "connected" leaves its SDK connectivity set to None.
+            'LINK_wifiState': 'online' if online else 'ready' if connected else 'idle'}
+
+
 class PreferenceSync:
     """Reconcile changes from either display; center wins simultaneous conflicts."""
     def __init__(self):
         self.baseline = {}
 
     def choose(self, name, center, cluster, restarted=()):
+        # Playback belongs to the center player. A stale instrument value must
+        # never replace it, including when the center process has restarted.
+        if name in CENTER_CHANNELS:
+            return (None if center is None or equivalent(center, cluster) else "center"), center, False
         if equivalent(center, cluster):
             self.baseline[name] = center
             return None, center, False
@@ -303,6 +443,8 @@ class DisplayWriter:
         self.supported[name] = bool(ok)
         if not ok:
             return False, None
+        if name == 'VAPI_doorState':
+            return True, decode_door_mask(str(raw))
         return bool(ok), "" if ok and str(raw) == "" else decode_value(raw)
 
     def apply(self, groups, verify_cached=False):

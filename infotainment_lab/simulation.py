@@ -46,8 +46,18 @@ class Simulation:
 SIGNALS = {
     "gear": "VAPI_shiftState", "speed_kph": "VAPI_vehicleSpeed",
     "throttle_pct": "VAPI_pedalPos", "brake_pct": "VAPI_brakePedal",
-    "steering_deg": "VAPI_steeringAngle", "indicator": "VAPI_signalLeft",
+    "steering_deg": "VAPI_steeringAngle", "indicator": "VAPI_turnSignalActive",
 }
+
+
+def indicator_values(direction: str, elapsed_seconds: float = 0) -> dict:
+    active = {'off': 'Off', 'left': 'Left', 'right': 'Right', 'hazard': 'Both'}[direction]
+    left, right = direction in ('left', 'hazard'), direction in ('right', 'hazard')
+    illuminated = int(max(0, elapsed_seconds) / .4) % 2 == 0
+    return {'VAPI_signalLeft': left, 'VAPI_signalRight': right,
+            'VAPI_turnSignalActive': active,
+            'LIGHT_turnIndicatorLeft': 'On' if left and illuminated else 'Off',
+            'LIGHT_turnIndicatorRight': 'On' if right and illuminated else 'Off'}
 
 
 def display_values(sim: Simulation) -> dict[str, dict]:
@@ -62,6 +72,5 @@ def display_values(sim: Simulation) -> dict[str, dict]:
         'throttle_pct': {'VAPI_pedalPos': sim.throttle_pct},
         'brake_pct': {'VAPI_brakePedal': sim.brake_pct > 0},
         'steering_deg': {'VAPI_steeringAngle': sim.steering_deg},
-        'indicator': {'VAPI_signalLeft': sim.indicator in ('left', 'hazard'),
-                      'VAPI_signalRight': sim.indicator in ('right', 'hazard')},
+        'indicator': indicator_values(sim.indicator),
     }
