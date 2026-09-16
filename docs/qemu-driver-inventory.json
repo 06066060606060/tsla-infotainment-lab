@@ -1,0 +1,121 @@
+[
+  {
+    "firmware": "2025.26.8.ice",
+    "kernel_bytes": 9233408,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "c540f831cde98cbb50b92137d9840ff98403c39734f8f25708328d0e0de8da3e",
+    "bank_b_kernel_matches_a": true
+  },
+  {
+    "firmware": "2026.21.6.ice",
+    "kernel_bytes": 12026880,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "ce08bfa5e015c881fbe708fc38bb63157e878ad8e32c20fb52c51cf5522e0483",
+    "bank_b_kernel_matches_a": true
+  },
+  {
+    "firmware": "2026.26.6.1.ice",
+    "kernel_bytes": 12076032,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "4e518bc9e145747760828ca186cdb2be054f988dff0ac91567afb3cdf782efc8",
+    "bank_b_kernel_matches_a": true
+  },
+  {
+    "firmware": "2026.26.6.1.mcu2",
+    "kernel_bytes": 12039168,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "a54d6099aa3875be1760335787c30de959e92fb7e2c7440e65dfe9f14b4ea81d",
+    "bank_b_kernel_matches_a": true
+  },
+  {
+    "firmware": "2026.26.6.5.ice",
+    "kernel_bytes": 12076032,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "fec2c277b52c4a5854467eb909bc0606acb96407a25afb5a8fe9dcba33efc783",
+    "bank_b_kernel_matches_a": true
+  },
+  {
+    "firmware": "2026.8.3.ice",
+    "kernel_bytes": 12026880,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "4c195a3a83b6c617e5e1daf867dcc33ad001e8cdfe7bd1b2832e3e402ed8ff6f",
+    "bank_b_kernel_matches_a": true
+  },
+  {
+    "firmware": "2026.8.3.mcu2",
+    "kernel_bytes": 11985920,
+    "drivers": {
+      "CONFIG_DRM_I915": "m",
+      "CONFIG_DRM_AMDGPU": "n",
+      "CONFIG_DRM_NOUVEAU": "n",
+      "CONFIG_DRM_QXL": "n",
+      "CONFIG_DRM_BOCHS": "n",
+      "CONFIG_DRM_VMWGFX": "n",
+      "CONFIG_DRM_VBOXVIDEO": "n",
+      "CONFIG_VIRTIO_PCI": "n",
+      "CONFIG_MODULE_SIG_FORCE": "y"
+    },
+    "bank_a_kernel_sha256": "1bc2de5bc6f7fb75eeb327a3151e8579cc504efbbd92c9c9d95516fea1cf31c5",
+    "bank_b_kernel_matches_a": true
+  }
+]

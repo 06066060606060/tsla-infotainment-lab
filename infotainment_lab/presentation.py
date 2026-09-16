@@ -2,10 +2,12 @@
 from PySide6.QtCore import Qt, QRectF, QPointF
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QIcon
 from PySide6.QtWidgets import QWidget
+from .theme import current_colors
 
 
-def icon(name, color='#a7bbc5'):
+def icon(name, color=None):
     """Draw the app's own simple line icons at device-independent resolution."""
+    color = color or current_colors()['muted']
     pixmap = QPixmap(48, 48)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -60,6 +62,7 @@ class DisplayOverview(QWidget):
         self.center = QPixmap()
         self.cluster = QPixmap()
         self.message = 'Your displays will appear here'
+        self.single_display = False
         self.setMinimumHeight(225)
         self.setAccessibleName('Display overview')
 
@@ -70,37 +73,39 @@ class DisplayOverview(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        c = current_colors()
         w, h = self.width(), self.height()
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor('#101a23'))
-        p.drawRoundedRect(QRectF(0, 0, w, h), 12, 12)
-        for x in range(18, w, 22):
-            for y in range(18, h, 22):
-                p.setPen(QColor('#22313d'))
-                p.drawPoint(x, y)
+        p.setBrush(QColor(c['preview']))
+        p.drawRoundedRect(QRectF(0, 0, w, h), 20, 20)
         empty = self.center.isNull() and self.cluster.isNull()
-        display_height = h - 34 if empty else h
-        ch = display_height - 30
-        cw = ch * 720 / 1152
-        left_w = min(w * .53, (display_height - 50) * 2.66)
-        gap = 22
-        start = max(12., (w - cw - left_w - gap) / 2)
-        panels = [(QRectF(start, (display_height - left_w / 2.66) / 2, left_w, left_w / 2.66), self.cluster),
-                  (QRectF(start + left_w + gap, 15, cw, ch), self.center)]
-        for rect, frame in panels:
-            p.setPen(QPen(QColor('#415568'), 2))
-            p.setBrush(QColor('#060b10'))
-            p.drawRoundedRect(rect, 9, 9)
+        area = QRectF(18, 18, max(1, w - 36), max(1, h - (64 if empty else 36)))
+        frames = [self.center] if self.single_display else [self.cluster, self.center]
+        ratios = [(frame.width() / frame.height() if not frame.isNull() else
+                   (1.6 if self.single_display else 2.66 if index == 0 else .625))
+                  for index, frame in enumerate(frames)]
+        # Fit real frame proportions into equal slots; landscape ICE is never
+        # squeezed into a portrait MCU2 placeholder.
+        gap = 18
+        slot_width = (area.width() - gap * (len(frames) - 1)) / len(frames)
+        for index, (frame, ratio) in enumerate(zip(frames, ratios)):
+            height = min(area.height(), slot_width / ratio)
+            width = height * ratio
+            x = area.x() + index * (slot_width + gap) + (slot_width - width) / 2
+            rect = QRectF(x, area.center().y() - height / 2, width, height)
+            p.setPen(QPen(QColor(c['outline']), 1.5))
+            p.setBrush(QColor(c['surface']))
+            p.drawRoundedRect(rect, 12, 12)
             content = rect.adjusted(5, 5, -5, -5)
             if not frame.isNull():
                 scaled = frame.scaled(content.size().toSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 p.drawPixmap(int(content.center().x() - scaled.width()/2), int(content.center().y() - scaled.height()/2), scaled)
             else:
-                p.setPen(QPen(QColor('#2b414f'), 2))
-                p.drawLine(content.center().toPoint(), (content.center() + QPointF(0, -12)).toPoint())
+                p.setPen(QPen(QColor(c['outline_variant']), 2))
+                p.drawEllipse(content.center(), 6, 6)
         if empty:
-            p.setPen(QColor('#a7bdc8'))
-            p.drawText(QRectF(10, h-29, w-20, 24), Qt.AlignCenter, self.message)
+            p.setPen(QColor(c['muted']))
+            p.drawText(QRectF(12, h - 34, w - 24, 24), Qt.AlignCenter, self.message)
         p.end()
 
 
@@ -112,6 +117,14 @@ def readiness(environment):
         return 'user'
     if environment.get('architecture') != 'x86_64':
         return 'architecture'
+    if environment.get('engine') == 'qemu':
+        if environment.get('missing'):
+            return 'dependencies'
+        if not environment.get('kvm_available'):
+            return 'kvm'
+        if not environment.get('display_available'):
+            return 'display'
+        return 'ready' if environment.get('runtime_ready') else 'virtual-image'
     if environment.get('missing') or not environment.get('runtime_ready'):
         return 'dependencies'
     if not environment.get('display_available'):

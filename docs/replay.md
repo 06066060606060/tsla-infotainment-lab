@@ -4,10 +4,20 @@ Select a local Tesla dashcam MP4 with embedded driving data in the Replay panel.
 The camera pipeline decodes the selected view and sends RGB24 frames to the
 firmware camera input. Driving data follows the same decoded video frame:
 gear, speed, accelerator position, brake, steering angle and turn signals.
+The display bridge also derives signed speed, road-wheel angle and yaw rate for
+the native ApViz ego model, so forward/reverse motion and steering use the same
+committed recording frame. Road-wheel angle is converted to the firmware camera
+sign convention so projected reverse guide lines follow the recorded turn.
+The 14.8:1 steering ratio matches the repository's TeslaCam 3D presentation
+pipeline.
 
 在回放面板选择带有内嵌行驶数据的本地 Tesla 行车记录 MP4。摄像头管线解码
 所选视角，将 RGB24 画面送入固件摄像头输入；挡位、车速、油门、刹车、方向盘
 角度和转向灯按照同一视频时钟回放。
+显示桥还会为原生 ApViz 车模计算带方向车速、路轮角和横摆角速度，因此前进、倒车
+及转向动画与已提交的录像帧保持同步。路轮角会转换为固件摄像头的符号约定，使倒车
+轨迹线跟随录像中的实际转向。
+14.8:1 转向比与项目内 TeslaCam 3D 可视化管线保持一致。
 
 Use Play, Pause and the timeline to move through the recording. Playback speed
 ranges from 0.25× to 2×, and Loop restarts the clip at the end. Pause holds both

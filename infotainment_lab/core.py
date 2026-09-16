@@ -16,7 +16,18 @@ def profiles() -> list[dict]:
 
 
 def profile_for(version: str, variant: str) -> dict | None:
-    return next((p for p in profiles() if p["version"] == version and p["variant"] == variant), None)
+    exact = next((p for p in profiles() if p["version"] == version and p["variant"] == variant), None)
+    if exact:
+        return exact
+    if variant == "ice_mrb" and re.fullmatch(r"\d{4}(?:\.\d+){2,3}", version):
+        return {"id": "ice-mrb-generic", "version": version, "variant": variant,
+                "name": "ICE · MRB (experimental)", "architecture": "x86_64",
+                "experimental": True, "single_display": True}
+    if variant == "modelsx_info2" and re.fullmatch(r"\d{4}(?:\.\d+){2,3}", version):
+        return {"id": "mcu2-generic", "version": version, "variant": variant,
+                "name": "Model S / X · MCU2 (experimental)", "architecture": "x86_64",
+                "experimental": True}
+    return None
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -73,7 +84,8 @@ def size_label(value: int) -> str:
 def public_report(status: dict, environment: dict) -> dict:
     """Export an allowlist: never include profiles, raw logs, paths or URLs."""
     return {
-        "application": "tsla-infotainment-lab", "version": "0.4.2",
+        "application": "tsla-infotainment-lab", "version": "0.5.0",
         "session": {k: status.get(k) for k in ("phase", "profile", "components", "renderer", "accelerated", "started_at")},
         "environment": {k: environment.get(k) for k in ("platform", "architecture", "missing", "display_available", "audio_available", "systemd_available")},
+        "audio": {k: status.get('audio_transport', {}).get(k) for k in ('phase', 'buffer_ms', 'playing', 'written_bytes', 'dropped_bytes')},
     }

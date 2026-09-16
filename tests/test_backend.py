@@ -27,6 +27,17 @@ def test_media_port_conflict_reports_the_port_without_starting_services(monkeypa
         supervisor.check_media_ports()
 
 
+def test_single_display_preflight_does_not_require_cluster(tmp_path):
+    executable = tmp_path / 'usr/tesla/UI/bin/QtCar'
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b'\x7fELF\x02\x01' + bytes(12) + b'\x3e\x00')
+    profile = {'experimental': True, 'single_display': True}
+    backend.verify_builds(tmp_path, profile)
+    executable.write_bytes(b'\x7fELF\x02\x01' + bytes(12) + b'\xb7\x00')
+    with pytest.raises(ValueError, match='architecture'):
+        backend.verify_builds(tmp_path, profile)
+
+
 def test_native_service_directory_is_private_and_rejects_symlinks(tmp_path):
     private = tmp_path / 'dvaccess'
     supervisor.prepare_service_sockets(private)
@@ -134,3 +145,11 @@ def test_rapid_volume_updates_preserve_pending_request_then_accept_native_feedba
     backend.atomic_json(feedback, {'state': {'volume_pct': 20}, 'config_mtime_ns': state.stat().st_mtime_ns})
     execute('volume_up', None, None, backend.vehicle_services_state, backend.set_vehicle_services)
     assert backend.load_json(state)['volume_pct'] == 25
+
+
+def test_shared_desktop_layout_timeout_does_not_stop_the_session(monkeypatch):
+    import subprocess
+    def stalled(*args, **kwargs):
+        raise subprocess.TimeoutExpired('xdotool', 2)
+    monkeypatch.setattr(supervisor, 'command', stalled)
+    assert supervisor.arrange_cluster({'DISPLAY': ':0.0'}) is False

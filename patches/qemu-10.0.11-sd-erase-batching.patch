@@ -1,0 +1,37 @@
+diff --git a/hw/sd/sd.c b/hw/sd/sd.c
+index e541c57..5591b9d 100644
+--- a/hw/sd/sd.c
++++ b/hw/sd/sd.c
+@@ -1040,6 +1040,32 @@ static void sd_erase(SDState *sd)
+     sd->csd[14] |= 0x40;
+ 
+     memset(sd->data, 0xff, erase_len);
++    if (!sdsc && sd->blk && erase_start <= erase_end) {
++        /* SDHC has no write-protect groups. Preserve erased bytes (0xff),
++         * but avoid a synchronous backend call for every 512-byte sector.
++         */
++        const size_t batch_size = MiB;
++        g_autofree uint8_t *erased = g_malloc(batch_size);
++        uint64_t remaining = erase_end - erase_start + erase_len;
++
++        memset(erased, 0xff, batch_size);
++        for (erase_addr = erase_start; remaining; ) {
++            size_t length = MIN(remaining, batch_size);
++
++            trace_sdcard_write_block(erase_addr, length);
++            if (blk_pwrite(sd->blk, sd_bootpart_offset(sd) + erase_addr,
++                           length, erased, 0) < 0) {
++                /* Preserve sector-level retry/error behavior on I/O failure. */
++                for (uint64_t retry = erase_addr;
++                     retry < erase_addr + length; retry += erase_len) {
++                    sd_blk_write(sd, retry, erase_len);
++                }
++            }
++            erase_addr += length;
++            remaining -= length;
++        }
++        return;
++    }
+     for (erase_addr = erase_start; erase_addr <= erase_end;
+          erase_addr += erase_len) {
+         if (sdsc) {

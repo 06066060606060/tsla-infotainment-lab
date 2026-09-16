@@ -307,6 +307,7 @@ class Recording:
         return self.samples[max(0, index)]
 
 
+
 def load_recording(filename):
     path = local_clip(filename)
     duration, fps = probe_video(path)
@@ -332,7 +333,7 @@ def sample_controls(sample):
     # Display simulator limits apply equally to manual inputs and recorded data.
     return Simulation.parse({
         'gear': GEARS.get(fields.get('gear_state'), 'P'),
-        'speed_kph': min(200, max(0, fields.get('vehicle_speed_mps', 0) * 3.6)),
+        'speed_kph': min(200, abs(fields.get('vehicle_speed_mps', 0)) * 3.6),
         'throttle_pct': min(100, max(0, fields.get('accelerator_pedal_position', 0))),
         'brake_pct': 100 if fields.get('brake_applied', False) else 0,
         'steering_deg': min(540, max(-540, fields.get('steering_wheel_angle', 0))),

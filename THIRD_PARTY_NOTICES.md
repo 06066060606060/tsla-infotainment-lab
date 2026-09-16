@@ -10,4 +10,6 @@ The packaging script copies installed package license notices into the bundle. W
 
 Runtime packages such as Mesa, Xephyr, X11 libraries, FUSE, D-Bus, ALSA, PulseAudio, Pillow and FFmpeg are installed through the user's distribution. They are not firmware artifacts and are not copied from the firmware into this repository. Their distribution packages include their own notices.
 
+The optional QEMU guest builder downloads **VirtualGL 3.1.5** from its [upstream release](https://github.com/VirtualGL/virtualgl/releases/tag/3.1.5), verifies a pinned SHA-256 digest, and installs it only in the generated guest. VirtualGL uses the wxWindows Library Licence; the upstream package includes its notices and third-party license files. VirtualGL binaries are not included in this repository or in the Qt application bundle.
+
 The camera V4L2 adapter is adapted from Derrick Yao's `tesla-subsystem-for-windows-dot-8/tesla-v4l2-camera-shim.c`, supplied in the original project workspace. The RGB24 file interface remains compatible with that project's camera writer. Only the camera device adapter is reused here; its gateway and browser-server launch stack is not required.

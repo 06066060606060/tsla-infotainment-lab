@@ -2,18 +2,20 @@
 import json
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget)
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget, QFrame)
 
+from .material_widgets import MaterialSwitch as QCheckBox
 from .vehicle_services import FIELD_SPECS, VehicleServices
 
 
-class Panel(QWidget):
+class Panel(QFrame):
     def __init__(self, window):
         super().__init__()
+        self.setObjectName('panel')
         self.window = window
         self.tr2 = window.tr2
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 14, 0, 0)
+        self.layout.setContentsMargins(24, 24, 24, 24)
         self.layout.setSpacing(12)
 
     def text(self, en, zh, style='muted'):
@@ -45,6 +47,7 @@ class BrowserPanel(Panel):
         self.layout.addLayout(row)
         self.health = self.text('', '', 'notice')
         self.media_health = self.text('', '', 'notice')
+        self.audio_health = self.text('', '', 'notice')
         self.text('In the browser check page, drag the slider, select text and move the tile. Use a parked simulation for video playback.',
                   '在浏览器测试页内可拖动滑块、选择文字和移动方块。播放影院视频时请使用驻车模拟状态。')
         self.layout.addStretch()
@@ -67,6 +70,11 @@ class BrowserPanel(Panel):
         modes = [('chromium', 'Browser', '浏览器'), ('chromium-card', 'Card', '卡片'), ('chromium-theater', 'Theater', '影院')]
         self.health.setText('  ·  '.join(self.tr2(en, zh) + (' ●' if live and components.get(key) == 'running' else ' ○') for key, en, zh in modes))
         media = session.get('media', {}).get('state')
+        audio = session.get('audio_transport', {})
+        self.audio_health.setVisible(live and audio.get('phase') in ('degraded', 'failed', 'unavailable'))
+        self.audio_health.setText(self.tr2('Audio output is unavailable. Check your desktop sound output.',
+                                          '音频输出暂不可用，请检查电脑的声音输出。'))
+        self.audio_health.setToolTip(audio.get('detail', ''))
         self.media_health.setVisible(live and media not in (None, 'disabled'))
         if media == 'peer-profile-rejected':
             self.media_health.setText(self.tr2(

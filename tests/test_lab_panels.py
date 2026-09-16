@@ -113,6 +113,18 @@ def test_browser_panel_reports_native_media_rejection_without_disabling_browser(
     assert 'security profile' in panel.media_health.text()
 
 
+def test_audio_failure_is_visible_without_disabling_browser_controls(window):
+    panel = window.browser_panel
+    session = {'phase': 'running', 'components': {'chromium': 'running'},
+               'audio_transport': {'phase': 'degraded', 'detail': 'Output stalled'}}
+    panel.update_status(session)
+    assert not panel.audio_health.isHidden()
+    assert panel.audio_health.toolTip() == 'Output stalled'
+    assert all(button.isEnabled() for button in panel.buttons)
+    panel.update_status(session | {'audio_transport': {'phase': 'running'}})
+    assert panel.audio_health.isHidden()
+
+
 def test_replay_polling_updates_widgets_without_sending_commands(window):
     panel = window.replay_panel
     panel.update_status(replay_session(rate=2, loop=False))

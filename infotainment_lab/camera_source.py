@@ -35,8 +35,13 @@ def camera_health(producer, consumer, running, now=None):
     now = time.time() if now is None else now
     result = dict(producer)
     fresh = running and producer.get('phase') == 'live' and 0 <= now - producer.get('frame_at', 0) < 3
+    held = (running and producer.get('mode') == 'replay'
+            and producer.get('phase') in ('paused', 'ended')
+            and producer.get('frame_at', 0) > 0
+            and 0 <= now - producer.get('updated_at', 0) < 3)
     consumed = running and 0 <= now - consumer.get('updated_at', 0) < 3
-    result.update(source_ready=fresh, firmware_receiving=bool(fresh and consumed),
+    result.update(source_ready=bool(fresh or held), frame_held=bool(held),
+                  firmware_receiving=bool((fresh or held) and consumed),
                   consumed_frames=consumer.get('frames', 0), firmware_fps=consumer.get('fps', 0) if consumed else 0)
     if not running:
         result.update(phase='stopped', source_ready=False, firmware_receiving=False)

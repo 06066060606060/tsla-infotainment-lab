@@ -27,15 +27,19 @@ from camera_source import source_config, camera_health, FRAME_BYTES, WIDTH, HEIG
 from browser import MODES, browser_url, media_health
 from replay import replay_request, manual_takeover, controls_lock
 from vehicle_services import VehicleServices, CAPABILITIES
+from host_graphics import selection as graphics_selection
 
 DATA = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "tsla-infotainment-lab"
 UNIT = "tsla-infotainment-lab.service"
 PACKAGES = ["squashfs-tools", "squashfuse", "fuse3", "gcc", "binutils", "libx11-dev", "python3-dbus", "python3-gi",
             "dbus-x11", "xserver-xephyr", "x11-utils", "xdotool", "mesa-utils", "pulseaudio-utils",
             "alsa-utils", "libasound2-plugins", "libnss3", "libgbm1", "libatk-bridge2.0-0", "pkexec", "fonts-noto-cjk",
-            "libxkbcommon-x11-0", "libxcb-cursor0", "libegl1", "libgl1", "libglx-mesa0", "python3-pil", "ffmpeg"]
+            "libxkbcommon-x11-0", "libxcb-cursor0", "libegl1", "libgl1", "libglx-mesa0", "python3-pil", "ffmpeg",
+            "apparmor", "apparmor-utils", "gstreamer1.0-tools", "gstreamer1.0-alsa", "gstreamer1.0-plugins-base",
+            "gstreamer1.0-plugins-good"]
 COMMANDS = ["unsquashfs", "squashfuse", "fusermount3", "gcc", "readelf", "Xephyr", "xdpyinfo",
-            "xdotool", "glxinfo", "dbus-run-session", "systemd-run", "pactl", "ffmpeg", "ffprobe"]
+            "xdotool", "glxinfo", "dbus-run-session", "systemd-run", "pactl", "ffmpeg", "ffprobe",
+            "apparmor_parser", "aa-exec"]
 
 
 def run(argv, *, timeout=30, check=True, env=None):
@@ -64,6 +68,7 @@ def probe() -> dict:
     is_wsl = "microsoft" in platform.release().lower()
     audio = bool(os.environ.get("PULSE_SERVER") or (Path("/run/user") / str(os.getuid()) / "pulse/native").exists())
     return {"platform": "Windows / WSL2" if is_wsl else "Linux / X11",
+            "host_gpu_selection": graphics_selection() if is_wsl else {},
             "architecture": platform.machine(), "missing": missing, "display_available": display,
             "audio_available": audio, "systemd_available": bool(shutil.which("systemctl")) and systemctl("show-environment").returncode == 0,
             "fuse_available": os.access("/dev/fuse", os.R_OK | os.W_OK), "root_user": os.getuid() == 0,
@@ -88,6 +93,10 @@ def import_image(filename: str) -> dict:
     version = read_image_text(image, "etc/customer-version", required=False)
     if version:
         variant = read_image_text(image, "etc/product-variants")
+        if not variant:
+            product = read_image_text(image, "etc/product", required=False)
+            platform_name = read_image_text(image, "etc/product-platform", required=False)
+            variant = f"{product}_{platform_name}" if product and platform_name else "unknown"
         profile = profile_for(version, variant)
         kind = "firmware"
     else:
@@ -132,9 +141,17 @@ def mounted_image(item: dict) -> Path:
 
 def verify_builds(root: Path, profile: dict):
     for name, key in (("QtCar", "center_build_id"), ("QtCarCluster", "cluster_build_id")):
+        if name == "QtCarCluster" and profile.get("single_display"):
+            continue
         executable = (root / "usr/tesla/UI/bin" / name).resolve(strict=True)
         if not executable.is_relative_to(root.resolve()):
             raise ValueError("Firmware executable resolves outside the read-only mount.")
+        if profile.get("experimental"):
+            with executable.open("rb") as stream:
+                header = stream.read(20)
+            if len(header) != 20 or header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\x3e\x00":
+                raise ValueError(f"{name} requires a different architecture; this launch profile needs x86_64 ELF.")
+            continue
         notes = run(["readelf", "-n", executable]).stdout
         if profile[key] not in notes:
             raise ValueError(f"{name} does not match the tested build. A new compatibility profile is required.")
@@ -194,6 +211,13 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
         raise ValueError("This firmware has been identified but has no tested launch profile yet.")
     root = mounted_image(item)
     verify_builds(root, profile)
+    if profile.get("single_display"):
+        cluster = False
+    if profile.get("experimental") and browser:
+        for member in ("usr/tesla/UI/bin/SpotifyServer", "usr/tesla/UI/bin/ChromiumAdapter",
+                       "usr/bin/media-webapp-server", "opt/media-webapp"):
+            if not (root / member).exists():
+                raise ValueError(f"Generic MCU2 media dependency missing: {member}. Disable browsers to try the display runtime.")
     maps = None
     if map_id:
         map_item = library_item(map_id)
@@ -206,11 +230,11 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     # application's temporary extraction directory must not own the session.
     runtime = DATA / "engine"
     runtime.mkdir(parents=True, exist_ok=True)
-    for name in ("supervisor.py", "core.py", "profiles.json", "simulation.py", "camera_source.py", "browser.py", "replay.py", "vehicle_services.py", "firmware_fonts.py"):
+    for name in ("supervisor.py", "core.py", "profiles.json", "simulation.py", "camera_source.py", "browser.py", "replay.py", "vehicle_services.py", "firmware_fonts.py", "host_graphics.py"):
         shutil.copy2(PACKAGE / name, runtime / name)
     shutil.copytree(PACKAGE / "runtime", runtime / "runtime", dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    config = {"firmware": str(root), "firmware_id": identifier, "map_id": map_id, "state": str(session), "profile": profile["id"],
+    config = {"firmware": str(root), "single_display": bool(profile.get("single_display")), "firmware_version": item["version"], "firmware_id": identifier, "map_id": map_id, "state": str(session), "profile": profile["id"],
               "browser": browser, "cluster": cluster, "maps": maps,
               "display": os.environ.get("DISPLAY", ":0"), "pulse": os.environ.get("PULSE_SERVER", ""),
               "wsl": "microsoft" in platform.release().lower()}
@@ -328,7 +352,8 @@ def capture_displays(preview=False):
         if name == 'cluster' and not config.get('cluster'):
             continue
         display = config.get(name + '_display', '')
-        if not re.fullmatch(r':(?:19|[2-5][0-9])', display):
+        pattern = r':[01]\.0' if config.get('display_backend') == 'provided' else r':(?:19|[2-5][0-9])'
+        if not re.fullmatch(pattern, display):
             raise RuntimeError('The session display is not ready yet.')
         displays[name] = display
     from PIL import ImageGrab
@@ -349,6 +374,9 @@ def focus_display(name):
         raise ValueError('Unknown display.')
     if name == 'cluster' and not config.get('cluster'):
         raise RuntimeError('The instrument display is disabled for this session.')
+    if config.get('display_backend') == 'provided':
+        # The host raises the owning QEMU window; no Xephyr window exists here.
+        return {'display': name, 'guest': True}
     title = 'Infotainment Lab | ' + ('Center' if name == 'center' else 'Instruments')
     env = dict(os.environ, DISPLAY=config['display'])
     matches = run(['xdotool', 'search', '--onlyvisible', '--name', '^' + re.escape(title)], env=env, check=False).stdout.split()
@@ -391,6 +419,14 @@ def setup(uid: int):
         raise ValueError("Choose a normal desktop user for runtime ownership.")
     run(["apt-get", "update"], timeout=300)
     run(["apt-get", "install", "-y", *PACKAGES], timeout=900)
+    policy_source = PACKAGE / "runtime/media-apparmor.profile"
+    policy_target = Path("/etc/apparmor.d/tsla-infotainment-lab-media")
+    if policy_target.is_symlink():
+        raise RuntimeError("The media AppArmor policy path is a symbolic link; automatic setup has left it unchanged.")
+    shutil.copyfile(policy_source, policy_target)
+    policy_target.chmod(0o644)
+    if Path("/sys/module/apparmor/parameters/enabled").read_text().strip().upper() == "Y":
+        run(["apparmor_parser", "-r", policy_target])
     for name in ("/run/chromium", "/run/chromium/policies", "/run/chromium/policies/chromium", "/run/chromium/policies/chromium-card", "/run/chromium/policies/chromium-fullscreen", "/opt/games/run", "/opt/games/run/chromium-cache-files", "/opt/games/run/i2v"):
         path = Path(name)
         if any(p.is_symlink() for p in (path, *path.parents)):
@@ -398,13 +434,15 @@ def setup(uid: int):
         if not path.exists():
             path.mkdir(parents=True, mode=0o755)
             os.chown(path, owner.pw_uid, owner.pw_gid)
-    return {"installed": True}
+    return {"installed": True, "media_profiles": "installed"}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser", "steering"))
+    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser", "steering", "qemu-check", "qemu-start", "qemu-status", "qemu-stop"))
     parser.add_argument('--button')
+    parser.add_argument('--engine', choices=('native', 'qemu'), default='native')
+    parser.add_argument('--vm-directory')
     parser.add_argument('--source', choices=('pattern', 'video', 'raw', 'off', 'replay'), default='pattern')
     parser.add_argument('--mode', choices=tuple(MODES), default='browser')
     parser.add_argument('--url')
@@ -416,10 +454,34 @@ def main():
     parser.add_argument("--payload", default="{}")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--no-cluster", action="store_true")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--internet", action="store_true")
     args = parser.parse_args()
     try:
-        if args.action == "probe": result = probe()
+        if args.engine == 'qemu' and args.action not in ('import', 'qemu-check', 'qemu-start', 'qemu-status', 'qemu-stop'):
+            sys.path.insert(0, str(PACKAGE.parent))
+            from infotainment_lab.virtual_control import dispatch
+            result = dispatch(args, sys.modules[__name__])
+        elif args.action == "probe": result = probe()
         elif args.action == "import": result = import_image(args.path or "")
+        elif args.action == 'qemu-check':
+            from qemu_boot import boot_check
+            item = library_item(args.id or '')
+            if item['kind'] != 'firmware':
+                raise ValueError('Select a firmware image for the QEMU boot check.')
+            result = boot_check(Path(item['path']), DATA / 'qemu' / item['id'])
+        elif args.action in ('qemu-start', 'qemu-status', 'qemu-stop'):
+            from qemu_runtime import start as vm_start, status as vm_status, shutdown as vm_shutdown
+            item = library_item(args.id or '')
+            if item['kind'] != 'firmware':
+                raise ValueError('Select a firmware image for the VM.')
+            directory = DATA / 'qemu' / item['id']
+            if args.action == 'qemu-start':
+                result = vm_start(directory, graphics=not args.headless, internet=args.internet)
+            elif args.action == 'qemu-status':
+                result = vm_status(directory)
+            else:
+                result = vm_shutdown(directory)
         elif args.action == "start": result = start(args.id or "", args.map_id, not args.no_browser, not args.no_cluster)
         elif args.action == "stop": result = stop()
         elif args.action == "status": result = status()

@@ -65,6 +65,8 @@ def test_control_api_units_are_independent_of_native_display_units():
     assert metric["VAPI_vehicleSpeed"] == imperial["VAPI_vehicleSpeed"] == pytest.approx(27.7777778)
     assert metric["VAPI_displaySpeed"] == 100
     assert imperial["VAPI_displaySpeed"] == 62
+    assert metric['VAPI_speedUnits'] == 1
+    assert imperial['VAPI_speedUnits'] == 0
     assert speed_display_values(39.28, "Miles")["VAPI_displaySpeed"] == 24
     assert speed_display_values(39.28, "Kilometers")["VAPI_displaySpeed"] == 39
     assert speed_display_values(39.8, "Kilometers")["VAPI_displaySpeed"] == 40
@@ -163,6 +165,25 @@ def test_display_acknowledgement_requires_readback_not_just_set_success():
                       "refused": "rejected", "not_applied": "mismatch", "stored": "local-model"}
     assert detail["not_applied"] == {"ignored": "mismatch"}
     assert "ignored" not in writer.cache
+
+
+@pytest.mark.parametrize('label,value', [('Forwards', 0), ('Backwards', 1)])
+def test_vehicle_direction_normalizes_the_native_enum_readback(label, value):
+    display = FakeDisplay()
+    display.values['VAPI_vehicleDirection'] = label
+    writer = DisplayWriter(display)
+    report, _ = writer.apply({'gear': {'VAPI_vehicleDirection': value}})
+    assert report['gear'] == 'accepted'
+    assert display.writes == []
+
+
+@pytest.mark.parametrize('label,value', [('MPH', 0), ('KPH', 1)])
+def test_speed_unit_enum_readback_matches_the_requested_display_label(label, value):
+    display = FakeDisplay()
+    display.values['VAPI_speedUnits'] = label
+    report, _ = DisplayWriter(display).apply({'speed_kph': {'VAPI_speedUnits': value}})
+    assert report['speed_kph'] == 'accepted'
+    assert display.writes == []
 
 
 def test_unchanged_control_frames_do_no_bus_io_but_periodic_verification_recovers_drift():

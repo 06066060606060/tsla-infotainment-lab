@@ -1,5 +1,26 @@
 # Validation record
 
+## Version 0.5.0: Material desktop and QEMU (2026-09-16)
+
+- Linux: 230 tests passed. Windows: 205 passed, 25 Linux-only checks skipped.
+- The upper-left wordmark is removed in both wide and compact layouts. Native
+  Qt screenshots were regenerated in English and Simplified Chinese.
+- MCU2 2026.26.6.1 runs on the replacement-kernel QEMU guest. Center, instrument
+  and firmware Godot visualization renderers report AMD-backed VirGL. The
+  instruments use VirtualGL with their independent X11 window.
+- Qt stop/start released the old audio helper, created a helper owned by the new
+  VM, and restored both accelerated previews. Embedded Chromium audio reached
+  the host output monitor after restart with no output-queue drops.
+- Two 30-second tones and a 120-second tone completed normally. The latter took
+  119.605 seconds. Idle/resume was checked separately; extended streaming
+  playback remains unverified.
+- A 100 km/h input displays 100 km/h or 62 MPH according to the firmware's
+  selected units. Hold/release, replay pause/seek and changing RGB input were
+  checked against the running guest as described in the virtual desktop guide.
+- ICE in QEMU, clean-machine guest preparation, long-session performance and
+  full parity with the native runtime remain experimental. See
+  [virtual-desktop.md](virtual-desktop.md) for the current scope.
+
 ## Version 0.4.2: Service Mode, fonts and display channels (2026-09-10)
 
 - Linux: 154 tests passed. Windows: 134 passed, 20 Linux-specific checks skipped.

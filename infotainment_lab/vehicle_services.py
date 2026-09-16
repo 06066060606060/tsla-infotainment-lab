@@ -410,7 +410,8 @@ def speed_display_values(speed_kph: float, distance_units: str) -> dict:
     # The MCU2 display-speed DV is an integer. Supply the intended rounded
     # speed explicitly; its vehicle-speed DV keeps the precise m/s value.
     displayed = speed_kph if metric else speed_kph / 1.609344
-    return {"VAPI_vehicleSpeed": speed_kph / 3.6,
+    return {"VAPI_speedUnits": 1 if metric else 0,
+            "VAPI_vehicleSpeed": speed_kph / 3.6,
             "VAPI_displaySpeed": int(math.floor(displayed + .5))}
 
 
@@ -451,6 +452,11 @@ class DisplayWriter:
             return False, None
         if name == 'VAPI_doorState':
             return True, decode_door_mask(str(raw))
+        if name == 'VAPI_vehicleDirection' and str(raw) in ('Forwards', 'Backwards'):
+            # This enum accepts numeric writes but returns its symbolic name.
+            return True, {'Forwards': 0, 'Backwards': 1}[str(raw)]
+        if name == 'VAPI_speedUnits' and str(raw) in ('MPH', 'KPH'):
+            return True, {'MPH': 0, 'KPH': 1}[str(raw)]
         return bool(ok), "" if ok and str(raw) == "" else decode_value(raw)
 
     def apply(self, groups, verify_cached=False):

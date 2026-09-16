@@ -3,6 +3,7 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
                               QCheckBox, QComboBox, QGroupBox)
+from .material_widgets import MaterialSwitch as QCheckBox
 from .presentation import DisplayOverview, icon
 
 
@@ -18,6 +19,7 @@ def build_workspace(window, label, card, DropArea):
     columns = QHBoxLayout()
     columns.setSpacing(18)
     library, left = card()
+    window.library_card = library
     library.setFixedWidth(266)
     left.setContentsMargins(18, 20, 18, 20)
     left.setSpacing(12)
@@ -25,7 +27,7 @@ def build_workspace(window, label, card, DropArea):
     row.addWidget(label(tr('Your devices', '我的设备'), 'subtitle'))
     row.addStretch()
     add = window.button('+', '+', window.choose_files)
-    add.setFixedSize(38, 32)
+    add.setFixedSize(40, 40)
     add.setAccessibleName(tr('Add firmware', '添加固件'))
     add.setStyleSheet('padding: 0;')
     add.setIcon(icon('add'))
@@ -40,6 +42,8 @@ def build_workspace(window, label, card, DropArea):
     left.addWidget(window.search)
     window.items = QListWidget()
     window.items.setSpacing(4)
+    window.items.setWordWrap(True)
+    window.items.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     window.items.setMinimumHeight(100)
     window.items.currentRowChanged.connect(window.device_selected)
     left.addWidget(window.items, 1)
@@ -67,6 +71,7 @@ def build_workspace(window, label, card, DropArea):
     heading.addWidget(window.phase_badge)
     right.addLayout(heading)
     window.overview = DisplayOverview()
+    window.overview.setMinimumHeight(180)
     window.overview.message = tr('Your displays will appear here', '启动后显示屏幕预览')
     right.addWidget(window.overview, 1)
     window.preview_caption = label(tr('Display overview · Open a screen to interact', '屏幕预览 · 打开显示窗口即可操作'), 'muted')
@@ -83,6 +88,25 @@ def build_workspace(window, label, card, DropArea):
 
     options = QGroupBox(tr('Launch options', '启动选项'))
     opt = QVBoxLayout(options)
+    window.engine_box = QComboBox()
+    window.engine_box.addItem(tr('Native Linux / WSL', '原生 Linux / WSL'), 'native')
+    window.engine_box.addItem(tr('QEMU virtual machine', 'QEMU 虚拟机'), 'qemu')
+    window.engine_box.setCurrentIndex(window.engine_box.findData(window.bridge.engine))
+    window.engine_box.setAccessibleName(tr('Execution mode', '运行模式'))
+    window.engine_box.currentIndexChanged.connect(window.change_engine)
+    opt.addWidget(window.engine_box)
+    window.vm_options = QWidget()
+    vm_row = QHBoxLayout(window.vm_options)
+    vm_row.setContentsMargins(0, 0, 0, 0)
+    window.vm_directory = QLineEdit(window.bridge.vm_directory)
+    window.vm_directory.setPlaceholderText(tr('Guest directory · default application storage', '虚拟机目录 · 默认保存在应用数据目录'))
+    window.vm_directory.setAccessibleName(tr('QEMU guest directory', 'QEMU 客体目录'))
+    window.vm_directory.editingFinished.connect(window.change_vm_directory)
+    vm_row.addWidget(window.vm_directory, 1)
+    window.vm_browse = window.button('Browse…', '浏览…', window.choose_vm_directory)
+    vm_row.addWidget(window.vm_browse)
+    window.vm_options.setVisible(window.bridge.engine == 'qemu')
+    opt.addWidget(window.vm_options)
     row = QHBoxLayout()
     window.cluster_box = QCheckBox(tr('Instrument display', '仪表窗口'))
     window.browser_box = QCheckBox(tr('Embedded Chromium', '内嵌 Chromium'))
@@ -114,12 +138,14 @@ def build_workspace(window, label, card, DropArea):
     window.maps_box.currentIndexChanged.connect(window.save_options)
     actions = QHBoxLayout()
     window.start_button = window.button('Start device', '启动设备', window.start_session, True)
-    window.start_button.setIcon(icon('play', '#12392f'))
+    window.start_button.setIcon(icon('play'))
     window.stop_button = window.button('Stop', '停止', lambda: window.operation('stop'))
     window.stop_button.setObjectName('danger')
     actions.addWidget(window.start_button, 2)
     actions.addWidget(window.stop_button, 1)
     right.addLayout(actions)
+    window.qemu_button = window.button('QEMU boot check', 'QEMU 启动检查', window.check_qemu)
+    right.addWidget(window.qemu_button)
     columns.addWidget(device, 1)
     layout.addLayout(columns, 1)
     drop = DropArea(tr('Drop firmware to add a device', '拖入固件，添加设备'),

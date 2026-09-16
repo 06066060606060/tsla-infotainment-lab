@@ -33,6 +33,17 @@ def test_health_requires_live_source_and_recent_firmware_consumption():
     assert not camera_health(producer | {'phase': 'off'}, consumer, True, 100)['firmware_receiving']
 
 
+@pytest.mark.parametrize('phase', ['paused', 'ended'])
+def test_recording_retains_frame_only_with_a_live_producer(phase):
+    producer = {'mode': 'replay', 'phase': phase, 'frame_at': 10, 'updated_at': 99}
+    consumer = {'updated_at': 99, 'frames': 240, 'fps': 24}
+    state = camera_health(producer, consumer, True, 100)
+    assert state['source_ready'] and state['frame_held'] and state['firmware_receiving']
+    assert not camera_health(producer, consumer, True, 105)['source_ready']
+    assert not camera_health(producer, consumer, False, 100)['frame_held']
+    assert not camera_health(producer | {'frame_at': 0}, consumer, True, 100)['source_ready']
+
+
 @pytest.mark.skipif(os.name == 'nt', reason='Linux V4L2 compatibility adapter')
 def test_v4l2_adapter_streams_rgb_and_preserves_regular_files(tmp_path):
     import subprocess

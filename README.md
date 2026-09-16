@@ -4,7 +4,17 @@
 
 A native Linux desktop application for running and studying infotainment software on your own computer. Drop in a supported firmware image and open the real center display and instrument cluster as desktop windows. The Python/Qt control panel runs directly on Linux or Windows WSLg.
 
-Version **0.4.2** fixes Service Mode's alarm-state prerequisite and synchronizes its native state to the instrument cluster. It also includes the 0.4.1 font, steering, turn-signal, body-control and display-channel fixes. The tested firmware is **2026.26.6.1 · Model S/X · MCU2 (`modelsx_info2`)**. See the [changelog](CHANGELOG.md) for changes and remaining limitations.
+Version **0.5.0** introduces the Material desktop, removes the upper-left wordmark, and adds an experimental QEMU desktop with accelerated dual displays, buffered WSLg audio and integrated Qt controls. The tested firmware is **2026.26.6.1 · Model S/X · MCU2 (`modelsx_info2`)**. See the [changelog](CHANGELOG.md) for details.
+
+## Material desktop
+
+The native Qt panel now uses a Material 3 inspired design across all seven pages. Choose **System**, **Light** or **Dark** appearance and an **Iris / Blue / Leaf** accent from the sidebar. Below 1220 pixels wide, the navigation collapses to icons; its bottom settings menu keeps appearance and language available. Theme changes preserve your current controls and form edits.
+
+These are actual Debian WSLg Qt captures of the updated control panel with the firmware session stopped. They show the desktop design, not QEMU firmware completion. The 0.5.0 packages include this interface.
+
+![Material device manager, light appearance](docs/screenshots/material-devices-en.png)
+
+![Material driving controls, dark appearance](docs/screenshots/material-controls-zh.png)
 
 ## Bring your own firmware
 
@@ -49,7 +59,7 @@ On Windows, install Debian with WSL2 and follow Microsoft's [Linux GUI applicati
 2. On Linux, run `bash Launch-Linux.sh`. On Windows, double-click **Launch-WSL.cmd** in that folder to open the Linux GUI in Debian.
 3. Select **Prepare computer** if setup is needed. The app checks display access, user services, FUSE and runtime packages. Package installation uses Debian/Ubuntu's package manager and its administrator flow.
 4. Drop in your own supported firmware dump (tested: `2026.26.6.1.mcu2`), wait for inspection, then select **Start device**. Instrument display, Chromium and map choices are remembered for that image.
-5. Use **Center** and **Cluster** on the right toolbar to interact with the firmware windows. **Capture** saves both displays as PNG files.
+5. Use **Center** and **Cluster** in the top toolbar to interact with the firmware windows. **Capture** saves both displays as PNG files.
 
 **Restart** returns manual driving controls to Park; a selected recording waits for Play. **Stop** ends the device session and its workers. Closing the control panel leaves the session, camera and any active replay running. Opening the launcher again brings the existing control panel forward.
 
@@ -110,7 +120,7 @@ For the existing pipeline, start its writer and enter its output path, normally 
 
 ## Driving controls and vehicle services
 
-Select a gear and set dummy speed directly in **Controls**. Park resets speed and accelerator to zero. Pedals are independent inputs, with brake represented as a pressed/released display flag. Steering uses wheel degrees; the illustrative turning radius assumes a 2.96 m wheelbase and 15:1 steering ratio. Native displayed speed is rounded to a whole number in the selected Miles/Kilometers units.
+Select a gear and set dummy speed directly in **Controls**. Park resets speed and accelerator to zero. Pedals are independent inputs, with brake represented as a pressed/released display flag. Steering uses wheel degrees; the illustrative turning radius assumes a 2.96 m wheelbase and 14.8:1 steering ratio. Native displayed speed is rounded to a whole number in the selected Miles/Kilometers units.
 
 **Steering-wheel buttons** control volume, mute, play/pause and track selection
 through the native player. The right group opens the instrument volume, wiper
@@ -162,3 +172,15 @@ On Windows use `.venv\Scripts\Activate.ps1`. Build on the target OS; PyInstaller
 The repository excludes firmware, maps, recordings, browser profiles, runtime logs and credentials. [Contributions](CONTRIBUTING.md) should include reproducible evidence and remaining limitations.
 
 Independent project, not affiliated with or endorsed by Tesla. Project source is MIT licensed. Firmware, trademarks, screenshots of third-party interfaces, Qt and other dependencies retain their respective rights; see [third-party notices](THIRD_PARTY_NOTICES.md).
+
+### Experimental MCU2 compatibility
+
+Model S/X firmware with the `modelsx_info2` variant can use an experimental generic profile when no exact profile exists. Startup checks both display executables for x86_64 ELF format and checks media entry points when browsers are enabled. These checks do not establish ABI or runtime compatibility. The tested 2026.26.6.1 profile retains its build-ID checks. Other platforms still require their own launcher.
+
+### Experimental ICE compatibility
+
+The device manager also offers a bounded [QEMU vendor-kernel boot check](docs/qemu.md). Full firmware boot and desktop parity are **not implemented** by this check.
+
+A separate [QEMU virtual desktop](docs/virtual-desktop.md) now runs MCU2's real dual-screen UI and browser card with a replacement Linux kernel. Select QEMU in the Qt panel to use its previews, driving controls and camera/replay inputs. Both displays use AMD-backed VirGL; VirtualGL shares the accelerated GPU with the separate instrument window. Buffered WSLg audio passes playback and idle/resume checks; long-session audio and complete feature parity still need validation. The guide includes setup and validation details.
+
+Firmware identifying itself as `product=ice` and `product-platform=mrb` now uses a single landscape display. Empty product variants are handled during import. The launcher uses native-resolution raster presentation for QtCar and starts the original Godot visualization separately on the center display. The 2026.26.6.5 image has displayed the native UI, map and vehicle model in WSL Debian. Chromium and media processes start, but streaming playback and complete feature compatibility remain unverified. Re-import older library entries to refresh platform identification.

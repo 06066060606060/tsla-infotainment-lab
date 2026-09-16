@@ -4,11 +4,13 @@ import sys
 
 root = Path(SPECPATH)
 datas = [(str(root / 'infotainment_lab' / '*.py'), 'infotainment_lab'),
+         (str(root / 'scripts/build-virtual-guest.py'), 'scripts'),
          (str(root / 'infotainment_lab' / 'profiles.json'), 'infotainment_lab'),
          (str(root / 'LICENSE'), '.'), (str(root / 'THIRD_PARTY_NOTICES.md'), '.')]
+datas += [(str(path), 'infotainment_lab/assets') for path in (root / 'infotainment_lab' / 'assets').glob('*.svg')]
 datas += [(str(path), 'infotainment_lab/runtime')
           for path in sorted((root / 'infotainment_lab' / 'runtime').iterdir())
-          if path.is_file() and path.suffix in ('.py', '.c', '.conf', '.html')]
+          if path.is_file() and path.suffix in ('.py', '.c', '.conf', '.html', '.profile', '.json')]
 a = Analysis([str(root / 'run_app.py')], pathex=[str(root)], datas=datas, hiddenimports=[],
              excludes=['tkinter'], noarchive=False)
 pyz = PYZ(a.pure)

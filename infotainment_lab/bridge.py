@@ -20,9 +20,10 @@ class Results(QObject):
 
 
 class Work(QRunnable):
-    def __init__(self, action, arguments, distro, signals):
+    def __init__(self, action, arguments, distro, signals, epoch=0):
         super().__init__()
         self.action, self.arguments, self.distro, self.signals = action, arguments, distro, signals
+        self.epoch = epoch
 
     def run(self):
         env = dict(os.environ)
@@ -37,12 +38,18 @@ class Work(QRunnable):
             if os.name == "nt":
                 def linux_path(path):
                     answer = subprocess.run(["wsl.exe", "-d", self.distro, "--", "wslpath", "-a", "-u", path], timeout=30, **options)
-                    if answer.returncode: raise RuntimeError("WSL could not access the selected path.")
-                    return answer.stdout.strip()
+                    converted = answer.stdout.replace("\x00", "").strip()
+                    if answer.returncode or not converted:
+                        detail = answer.stderr.replace("\x00", "").strip() or converted or "wslpath returned no path"
+                        raise RuntimeError(
+                            f"Cannot translate path for WSL ({self.distro}): {path}\n{detail[-1500:]}"
+                        )
+                    return converted
                 backend = linux_path(backend)
-                if "--path" in args:
-                    index = args.index("--path") + 1
-                    args[index] = wsl_path_argument(args[index], linux_path)
+                for flag in ('--path', '--vm-directory'):
+                    if flag in args:
+                        index = args.index(flag) + 1
+                        args[index] = wsl_path_argument(args[index], linux_path)
                 prefix = ["wsl.exe", "-d", self.distro]
                 if self.action == "setup":
                     uid = subprocess.run([*prefix, "--", "id", "-u"], timeout=30, **options).stdout.strip()
@@ -59,7 +66,7 @@ class Work(QRunnable):
                     argv = ["pkexec", "/usr/bin/python3", backend, self.action, *args]
             else:
                 argv = ["/usr/bin/python3", backend, self.action, *args]
-            completed = subprocess.run(argv, timeout=1200 if self.action in ("setup", "import") else 120, **options)
+            completed = subprocess.run(argv, timeout=2400 if self.action == 'setup' else 1200 if self.action in ("import", "qemu-check") else 120, **options)
             lines = completed.stdout.replace("\x00", "").strip().splitlines()
             result = json.loads(lines[-1]) if lines else {"ok": False, "error": completed.stderr.strip()[-2000:]}
             if not isinstance(result, dict): raise ValueError("Invalid worker response")
@@ -69,6 +76,7 @@ class Work(QRunnable):
             result = {"ok": False, "error": "The operation timed out. Open Diagnostics to inspect the session before retrying."}
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
+        result['_bridge_epoch'] = self.epoch
         self.signals.finished.emit(self.action, result)
 
 
@@ -81,14 +89,29 @@ class Bridge(QObject):
         self.pool = QThreadPool(self)
         self.results = Results(self)
         self.pending = set()
+        self.engine, self.vm_directory, self.epoch = 'native', '', 0
         self.results.finished.connect(self.complete)
 
     def complete(self, action, result):
+        epoch = result.pop('_bridge_epoch', 0)
+        if epoch != self.epoch:
+            return
         self.pending.discard(action)
         self.finished.emit(action, result)
+
+    def configure(self, engine, directory=''):
+        if engine not in ('native', 'qemu'):
+            raise ValueError('Choose native or QEMU mode.')
+        if (engine, directory) != (self.engine, self.vm_directory):
+            self.engine, self.vm_directory = engine, directory
+            self.epoch += 1
+            self.pending.clear()
 
     def call(self, action, *arguments):
         if action in self.pending: return False
         self.pending.add(action)
-        self.pool.start(Work(action, arguments, self.distro, self.results))
+        arguments = [*arguments, '--engine', self.engine]
+        if self.vm_directory:
+            arguments += ['--vm-directory', self.vm_directory]
+        self.pool.start(Work(action, arguments, self.distro, self.results, self.epoch))
         return True

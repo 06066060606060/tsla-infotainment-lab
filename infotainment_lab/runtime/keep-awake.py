@@ -27,6 +27,13 @@ storage = state / 'storage'
 storage.mkdir(parents=True, exist_ok=True)
 snapshot = {'online': False, 'ip': '', 'checked_at': None}
 model = VehicleServices()
+vehicle_profile = {}
+try:
+    profile_path = Path(os.environ.get('TESLA_NATIVE_VEHICLE_PROFILE', ''))
+    if profile_path.is_file():
+        vehicle_profile = json.loads(profile_path.read_text()).get('signals', {})
+except (OSError, ValueError, TypeError) as exc:
+    print(f'Unable to load vehicle profile: {exc}', flush=True)
 
 
 def atomic_json(name, value):
@@ -66,8 +73,9 @@ def monitor():
                      f' | Battery: {model.battery_percent:g}% (sim)'
                      f' | Disk: {usage.free/1024**3:.1f} GiB free / {usage.total/1024**4:.2f} TiB')
             env = dict(os.environ, DISPLAY=os.environ.get('TESLA_HOST_DISPLAY', ':0'))
-            ids = subprocess.check_output(['xdotool', 'search', '--name', '^'+re.escape(title_prefix)],
-                                          env=env, text=True, timeout=3).split()
+            ids = [] if os.environ.get('TESLA_EXTERNAL_DISPLAY') == '1' else subprocess.check_output(
+                ['xdotool', 'search', '--name', '^'+re.escape(title_prefix)],
+                env=env, text=True, timeout=3).split()
             for wid in ids:
                 subprocess.run(['xdotool', 'set_window', '--name', title, wid], env=env, check=True, timeout=3)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -83,6 +91,17 @@ def typed(value):
     if isinstance(value, float):
         return dbus.Double(value, variant_level=1)
     return dbus.String(value, variant_level=1)
+
+
+def apply_vehicle_profile(interface):
+    """Write the named MCU2 values once whenever a display service starts."""
+    result = {}
+    for name, value in vehicle_profile.items():
+        try:
+            result[name] = 'accepted' if interface.DataSetValueRequest(name, typed(value), timeout=1) else 'unsupported'
+        except dbus.DBusException as exc:
+            result[name] = exc.get_dbus_name()
+    return result
 
 
 def network_values(current):
@@ -107,13 +126,15 @@ threading.Thread(target=monitor, daemon=True).start()
 time.sleep(float(os.environ.get('TESLA_NATIVE_STATE_DELAY', '10')))
 awake = {'GUI_enableDisplayKeepAlive': True, 'VAPI_driverPresent': True,
          'VAPI_icLCDOn': True, 'VAPI_icBacklightOn': True, 'VAPI_vehicleInAccessoryPlus': True,
-         'VAPI_carType': os.environ.get('TESLA_NATIVE_CAR_TYPE', '3')}
-if os.environ.get('TESLA_NATIVE_CAR_TYPE') == 'ModelS':
+         'VAPI_carType': os.environ.get('TESLA_NATIVE_CAR_TYPE', '3'),
+         'GUI_audioReady': True, 'GUI_serviceModeAudioResetNeeded': False}
+if os.environ.get('TESLA_NATIVE_CAR_TYPE') in ('ModelS', 'ModelX'):
     awake |= {'VAPI_driveRailOn': True, 'VAPI_accRailOn': True}
 writers, owners, request_baseline = {}, {}, {}
 media_writers, media_owners, media_network_report = {}, {}, {}
 controls = Simulation()
 control_report, service_report, service_details, errors = {}, {}, {}, {}
+vehicle_profile_report = {}
 volume_max, distance_units = {}, {}
 config_stamp = None
 next_inventory = next_requests = next_services = next_slow = next_network = next_report = 0
@@ -157,10 +178,12 @@ while True:
                         continue
                     if owners.get(service) != owner:
                         iface = dbus.Interface(bus.get_object(service, '/LocalDataValue'), 'com.tesla.LocalDataValue')
-                        writers[service], owners[service] = DisplayWriter(iface, typed), owner
-                        ok, maximum = writers[service].read('GUI_audioVolumeMax')
+                        vehicle_profile_report[service] = apply_vehicle_profile(iface)
+                        writer = DisplayWriter(iface, typed)
+                        ok, maximum = writer.read('GUI_audioVolumeMax')
                         volume_max[service] = maximum if ok and isinstance(maximum, (float, int)) and maximum > 0 else 10.333
                         request_baseline[service] = {}
+                        writers[service], owners[service] = writer, owner
                         if service == 'com.tesla.CenterDisplay':
                             body_router = BodyRequestRouter()
                         service_dirty = True
@@ -243,7 +266,10 @@ while True:
                 if current_controls != last_controls or tick >= next_slow:
                     driving = driving_values(controls)
                     driving['indicator'] = indicator_values(controls.indicator, tick - indicator_since)
-                    driving['speed_kph'] = speed_display_values(controls.speed_kph, distance_units.get(service, 'Miles'))
+                    # Keep ApViz motion inputs (signed/replay speed) while
+                    # applying the display-unit-specific speedometer values.
+                    driving['speed_kph'].update(
+                        speed_display_values(controls.speed_kph, distance_units.get(service, 'Miles')))
                     control_report[service], _ = writer.apply(driving, verify_cached=tick >= next_slow)
                 indicator_report, _ = writer.apply({'indicator': indicator_values(controls.indicator, tick - indicator_since)})
                 control_report.setdefault(service, {}).update(indicator_report)
@@ -296,6 +322,7 @@ while True:
                 'firmware': service_report, 'signals': service_details, 'capabilities': CAPABILITIES,
                 'gps_source': 'dashcam' if gps else 'desktop', 'errors': errors, 'updated_at': now,
                 'media_network': media_network_report,
+                'vehicle_profile': vehicle_profile_report,
                 'body_requests': body_router.report,
             })
             next_report = tick + .5

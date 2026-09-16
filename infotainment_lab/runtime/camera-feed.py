@@ -173,6 +173,11 @@ class CameraFeed:
                         phase, detail = 'off', 'Camera feed stopped.'
                     elif config['mode'] == 'replay' and self.replay and self.replay.phase == 'manual':
                         phase, detail = 'off', 'Manual controls have taken over from the recording.'
+                    elif (config['mode'] == 'replay' and self.replay
+                          and self.replay.phase in ('paused', 'ended')
+                          and self.replay.frame is not None):
+                        phase = self.replay.phase
+                        detail = 'Holding the last recorded frame.'
                     elif time.time() - self.frame_at > 3 and frame is None:
                         phase, detail = 'waiting', 'Waiting for camera frames.'
                 except (OSError, ValueError) as exc:
@@ -184,7 +189,7 @@ class CameraFeed:
                     self.frames += 1
                     self.frame_at = time.time()
                     unavailable = False
-                elif phase != 'live' and not unavailable:
+                elif phase not in ('live', 'paused', 'ended') and not unavailable:
                     blank = Image.new('RGB', (WIDTH, HEIGHT), '#101d27')
                     ImageDraw.Draw(blank).text((440, 335), 'CAMERA FEED UNAVAILABLE', fill='#a8bcc8', font=TITLE_FONT)
                     atomic_bytes(self.folder / 'back.rgb', blank.tobytes())

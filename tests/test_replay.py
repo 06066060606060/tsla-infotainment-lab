@@ -103,6 +103,12 @@ def test_recorded_controls_obey_same_limits_as_manual_controls():
         'throttle_pct': 0, 'brake_pct': 0, 'steering_deg': -540, 'indicator': 'off'}
 
 
+def test_reverse_negative_speed_is_not_discarded():
+    sample = replay.Sample(0, {'gear_state': 2, 'vehicle_speed_mps': -2})
+    assert replay.sample_controls(sample)['speed_kph'] == 7.2
+
+
+
 def make_player(tmp_path, monkeypatch, autoplay=True, config=None):
     recording = replay.Recording(Path('/local/drive.mp4'), 60, 36,
         [replay.Sample(0, {'gear_state': 1, 'vehicle_speed_mps': 10})])
