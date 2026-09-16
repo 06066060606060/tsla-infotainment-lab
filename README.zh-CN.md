@@ -1,156 +1,96 @@
-# Infotainment Lab · 车机实验室
+# Infotainment Lab
 
-[English](README.md)
+[English](README.md) · [下载](https://github.com/derrickyau9/tsla-infotainment-lab/releases/latest) · [更新日志](CHANGELOG.md)
 
-一个使用 Python 与 Qt 编写的**原生 Linux 桌面应用**。导入自备的适配固件，即可在独立桌面窗口中运行真实车机中控与仪表界面。控制面板直接在 Linux 或 Windows WSLg 中启动。
+在自己的电脑上运行车机软件，把中控和仪表盘作为独立桌面窗口打开。原生 Qt 应用负责固件管理、驾驶控制、浏览器、摄像头和行驶记录回放。
 
-**0.5.0** 带来 Material 桌面界面，移除左上角标识，并加入实验性 QEMU 桌面、双屏加速、WSLg 音频缓冲和完整 Qt 控制入口。经过验证的固件为 **2026.26.6.1 · Model S/X · MCU2（`modelsx_info2`）**。详情见[更新日志](CHANGELOG.md)。
+支持 Linux，以及安装了 Debian WSL2 的 Windows。**0.5.0** 带来 Material 3 界面和 QEMU 桌面模式。
 
-## Material 桌面界面
+![设备管理器](docs/screenshots/material-devices-en.png)
 
-原生 Qt 面板的七个页面已统一采用 Material 3 风格。侧栏可选择**跟随系统／浅色／深色**，以及**鸢尾紫／晴空蓝／叶绿**强调色。窗口宽度小于 1220 像素时，导航栏收起为图标，底部设置菜单仍可切换外观与语言。切换主题会保留当前控制状态与未提交表单。
+## 先准备固件
 
-以下是更新后控制面板在 Debian WSLg 下的真实 Qt 截图，截图时固件会话未启动；用于展示桌面设计，不代表 QEMU 固件模式已经完成。0.5.0 安装包已包含此界面。
+**你需要自行准备兼容的 Firmware Dump。** 仓库和发行包均不包含固件或地图。请使用你有权使用的固件；项目不提供提取工具或导出教程。
 
-![浅色 Material 设备管理](docs/screenshots/material-devices-zh.png)
+字体和车辆资源直接从所选固件读取。Model S/X MCU2 固件使用中控与仪表双屏，ICE 固件使用横向中控屏。内置 MCU2 配置对应 **2026.26.6.1**，其他版本按平台选择适配配置。
 
-![深色 Material 车辆控制](docs/screenshots/material-controls-zh.png)
+## 开始使用
 
-## 使用前：需要自备固件
+需要 x86_64 电脑和 Linux 图形桌面。Windows 用户先安装 **WSL2 Debian**，并开启 [WSLg 图形应用支持](https://learn.microsoft.com/zh-cn/windows/wsl/tutorials/gui-apps)。
 
-**本仓库和下载包均不包含 Tesla 固件。** 你需要自行取得或导出有权使用、且与本项目适配的 **Firmware Dump（固件转储镜像）**。本项目不提供固件下载、提取工具，也不提供获取或导出 Firmware Dump 的教程。
+1. 下载发行包并完整解压，保留可执行文件旁边的 `_internal` 文件夹。
+2. Linux 应用通过 `bash Launch-Linux.sh` 启动；Windows 下可双击 **Launch-WSL.cmd**。下载 Windows 控制面板包后，使用 **InfotainmentLab.exe**。
+3. 点击“准备电脑”，安装 Linux 运行组件。
+4. 把固件拖入“设备”页，选中后点击“启动设备”。
+5. 使用顶部“中控”和“仪表”按钮打开对应窗口。“截图”会保存两块屏幕的 PNG 图片。
 
-没有自备的适配固件，仍可打开控制面板，但无法启动车机系统。完成应用环境准备后，再导入自己的镜像；车机字体和其他资源直接从该镜像读取。地图包也需要另行自备。
+请以普通桌面用户运行。安装系统组件时，应用会请求管理员权限。Linux 二进制包需要 glibc 2.41 或更高版本。
 
-![Debian WSLg 中运行的原生中文浏览器工作区](docs/screenshots/browsers-zh.png)
+关闭控制面板后，车机会继续运行。“停止”结束会话；“重启”会重新启动并回到 P 挡。设备选项和所选地图会自动保存。
 
-<img src="docs/screenshots/native-fonts-center.png" width="350" alt="0.4.1 中控使用固件自带字体，菜单文字清晰显示" />
+### 从源码运行
 
-![仪表盘原生文字与后备箱打开的 3D 画面](docs/screenshots/native-fonts-cluster.png)
-
-## 当前能力
-
-| 功能 | 实际状态 |
-| --- | --- |
-| 原生桌面 | 中英文设备管理、引导式环境准备、固件搜索、拖放导入、保留错误提示，以及可滚动页面。 |
-| 设备管理 | 精确构建校验、只读 FUSE 挂载、记忆启动选项、有限次数故障恢复、重启与停止。 |
-| 多窗口 | 可交互的中控、仪表、控制面板与可选摄像头预览；工具栏可唤起显示窗口或导出双屏 PNG。 |
-| 图形加速 | 显示实际渲染器，已在 WSLg 的 AMD Radeon / Mesa D3D12 上验证。本适配的 MCU2 可视化使用 Godot。 |
-| 车机字体 | 中控与仪表使用所选固件中的 Universal Sans 及后备字体；3D 纹理上传后恢复 Qt 文字所需的像素对齐。 |
-| 内嵌 Chromium | 浏览器与卡片模式、原生影院目录、键盘、滚轮、文字选择和拖动；分别显示已启动 Chromium 进程的运行状态。 |
-| 网络与容量 | 实测宿主网络状态和 Linux 文件系统容量。模拟电量默认 50%，可在车辆服务中修改。 |
-| 行驶控制 | P/R/N/D 挡位、模拟车速、油门、刹车、方向盘和转向灯；两屏接收同一份本地输入。 |
-| 摄像头与回放 | 测试画面、循环视频或现有 RGB24 管线接入固件摄像头。内嵌行驶数据跟随实际解码画面，支持暂停、跳转、倍速、循环和手动接管。 |
-| 车辆服务 | 本地空调、车门提示、灯光、电量／充电、声音与导航元数据，逐屏回读结果；在固件内修改空调和声音也会更新控制面板。 |
-| 双屏同步 | 共用行驶与车辆服务状态，同步 Santa 模式及可用的主题、方向盘偏好；中控播放信息单向传给仪表。不支持的字段保留在诊断中。 |
-| 地图 | 检查／挂载自备 NA 镜像。回放提供有效 GPS 后已看到街道底图；离线 NA 图包的使用及路线服务仍未验证。 |
-
-已在固件 UI 内验证浏览器、卡片交互，以及影院目录和 YouTube 首页。商业流媒体播放、DRM、需要登录的服务和全部网页应用尚未验证。真实车辆与云端专用服务没有接入；胎压目前保存在本地模型中。具体范围见[兼容性表](docs/compatibility.md)。
-
-## 启动
-
-需要 **x86_64 Linux**、X11/XWayland 桌面、systemd 用户服务、FUSE，以及你有权使用的适配镜像。**已验证环境为 WSL2 中的 Debian 13。** 独立 Linux 启动支持已实现，尚未在另一台实体机器上验证。
-
-Windows 请先安装 WSL2 与 Debian，按照微软的 [Linux 图形应用说明](https://learn.microsoft.com/en-us/windows/wsl/tutorials/gui-apps)配置环境，并以普通 Linux 用户运行应用。
-
-### 使用发布包
-
-1. 将 Linux 压缩包完整解压到固定目录，让 `_internal` 与可执行文件保持相邻。
-2. Linux 下运行 `bash Launch-Linux.sh`；Windows 下双击该目录的 **Launch-WSL.cmd**，即可在 Debian 中打开 Linux GUI。
-3. 若环境未就绪，点击“准备运行环境”。应用会检查显示、用户服务、FUSE 与依赖，并使用 Debian/Ubuntu 软件包管理器及其管理员流程安装依赖。
-4. 拖入自备的适配固件（已测试 `2026.26.6.1.mcu2`），检查完成后点击“启动设备”。仪表、Chromium 和地图选择会按设备记忆。
-5. 点击右侧“中控”或“仪表”操作真实显示窗口；“截图”可以导出双屏 PNG。
-
-“重启”会把手动行驶输入恢复为 P 挡；已选中的回放会等待再次播放。“停止”会结束设备及其后台进程。仅关闭控制面板会保留设备、摄像头和正在播放的录像。再次打开启动器会唤起已有控制面板。
-
-设备页显示真实双屏截图，在该页可见时每五秒刷新一次。实际交互请在独立显示窗口内进行。**Ctrl+O** 添加固件；**Ctrl+1 / 2 / 3** 分别进入设备、车辆控制和摄像头与回放。
-
-可选：在可执行文件旁运行 `python3 install-desktop.py` 添加 Linux 应用菜单入口，WSLg 可以将其显示在 Windows 中。本地包在 Debian 13／glibc 2.41 上构建和验证，更旧的 glibc 尚未验证。CI 配置为在 Ubuntu 22.04 上构建，以覆盖更低系统基线。发布包不适合当前发行版时，可以使用源码启动。
-
-### 源码启动
-
-安装 Python 3.11+ 和 `python3-venv`，克隆或解压仓库后运行：
+安装 Python 3.11+ 和 `python3-venv`，然后运行：
 
 ```bash
+git clone https://github.com/derrickyau9/tsla-infotainment-lab.git
+cd tsla-infotainment-lab
 bash Launch-Linux.sh
 ```
 
-首次启动会创建 `~/.local/share/tsla-infotainment-lab/ui-venv`，并安装固定版本的 Qt 依赖。其他运行依赖通过“准备运行环境”安装。Windows 下双击 **Launch-WSL.cmd**；使用其他发行版时，在 PowerShell 中运行 `Launch-WSL.ps1 -Distribution <名称>`。
+首次启动会创建 Python 环境并安装 Qt。Windows 下可使用项目中的 **Launch-WSL.cmd**。需要指定其他发行版时，在 PowerShell 中运行 `Launch-WSL.ps1 -Distribution <名称>`。
 
-在仓库目录执行 `powershell.exe -NoProfile -File scripts/install-wsl-shortcut.ps1`，可安装桌面和开始菜单快捷方式，直接打开 Linux GUI，不显示控制台。Linux 发布包将该脚本放在顶层目录。
+运行 `scripts/install-wsl-shortcut.ps1` 可以添加开始菜单快捷方式。如果窗口没有出现，从终端启动可查看错误，启动日志位于 `~/.local/state/tsla-infotainment-lab/launcher.log`。
 
-可选的 Windows 控制面板包需要完整解压 ZIP，再双击 **InfotainmentLab.exe**；保留相邻的 `_internal` 目录。其后端同样在 Debian WSL 中运行。
+### QEMU 模式
 
-窗口未出现时，从应用目录运行 **Launch-WSL.cmd**，启动错误会保留在窗口内。Linux 启动器把最近一次日志写入 `~/.local/state/tsla-infotainment-lab/launcher.log`。设备启动后，使用“中控”或“仪表”唤起对应窗口。
+在“设备”中选择 **QEMU**，即可在 Debian 客体内运行车机桌面。控制面板提供启动、关机、双屏预览、浏览器卡片、驾驶输入和摄像头回放。MCU2 桌面使用 VirGL，仪表独立窗口通过 VirtualGL 共用 GPU。
 
-## 浏览器工作区
+QEMU 使用替代 Linux 内核，固件镜像保持只读。客体磁盘需按 [QEMU 桌面指南](docs/virtual-desktop.md)在本机构建。
 
-打开“浏览器”，输入 HTTP/HTTPS 网址，再选择“浏览器”或“卡片模式”。留空会打开自带交互测试页。“影院”打开固件的应用目录，随后可在目录中选择应用。
+## 调整外观
 
-浏览器和卡片模式共用同一浏览器应用及其配置。
+可以选择跟随系统、浅色或深色主题，以及鸢尾紫、晴空蓝、叶绿强调色。窗口缩小时会切换为紧凑导航。控制面板支持简体中文和英文。
 
-当前源码还会启动固件专用音乐浏览器、媒体网页、适配器和 Spotify 服务，
-并将实际宿主网络状态传给 Spotify SDK。在中控内打开 Spotify 后仍需登录账户；
-当前 WSL 环境中，固件仍会拒绝媒体服务的进程安全配置，Spotify 登录和播放
-尚不可用。“浏览器”页面会明确显示这项原生连接错误。
+![深色主题下的驾驶控制](docs/screenshots/material-controls-zh.png)
 
-本地测试页提供可拖动方块、滑块、文字选择、声音和 WebGL 检查。实际固件内嵌 Chromium 验证记录了拖动移动与释放事件，并将滑块从 20 移至 85，覆盖了当前显示缩放下的真实交互。
+## 驾驶与仪表
 
-<img src="docs/screenshots/embedded-browser.png" width="350" alt="运行中的车机中控内嵌 Chromium" /> <img src="docs/screenshots/theater.png" width="350" alt="运行中的固件影院目录" />
+在“控制”页选择 P、R、N、D 挡，调整车速、加速踏板、制动、方向盘和转向灯。中控和仪表使用同一份本地输入。切回 P 挡会将车速和加速踏板归零。
 
-## 摄像头与行车记录回放
+方向盘按钮可调节音量、静音、播放和切歌，按住音量加减键可连续调整。右侧按钮用于打开仪表面板。Santa 模式、支持的显示偏好，以及音乐标题和播放信息会在两块屏幕之间同步。
 
-在“摄像头与回放”中选择“测试画面”“打开视频…”或接入现有管线。打开中控摄像头应用，或在普通倒车摄像头测试中选择 R 挡，画面由固件原生摄像头页面绘制。已在当前 WSLg 主机测得测试画面与 H.264 输入约 24 fps；控制面板预览每秒刷新一次。
+![Santa 模式与仪表音量弹窗](docs/screenshots/cluster-santa.png)
 
-选择“打开行车记录 MP4…”并打开包含内嵌数据的录像，即可同步回放。播放、暂停、时间轴、0.25×–2× 倍速和循环同时控制画面与数据。挡位、车速、油门、刹车、方向盘和转向灯跟随已解码并发布的视频帧；有效 GPS 与航向传给两屏，加速度和辅助驾驶状态码保留为录制元数据。
+“车辆服务”集中管理空调、车门、灯光、电量和声音。打开车门、修改电量或切换车灯后，面板会显示固件响应。在原生车机内调节空调和音量，也会更新控制面板。具体操作见[车辆服务指南](docs/vehicle-services.md)。
 
-![使用合成演示画面与数据的摄像头和回放面板](docs/screenshots/replay-zh.png)
+这些控制只作用于本地桌面会话，不连接真实车辆。
 
-无需个人录像也能试用回放：在源码目录运行 `python3 scripts/make-replay-demo.py`，
-再选择生成的 `build/replay-demo.mp4`。脚本通过 FFmpeg 生成 12 秒视频和 288 个
-内嵌数据样本，不包含 GPS 位置。
+## 浏览器
 
-暂停保留当前帧与输入；跳转会先解码目标画面，再发布对应行驶数据。“手动接管”或修改任何手动驾驶输入，会解除录像对模拟器的控制；再次播放即可恢复。录制的 D 挡仍保持 D 挡，因此观看回放时请主动打开固件摄像头页面。
+打开“浏览器”页，输入网址后选择“浏览器”或“卡片模式”。“影院”打开固件自带的应用目录。浏览器与卡片共用配置，支持在嵌入视图中输入文字、滚动、选中文字和拖动。
 
-复用已有管线时，启动其 writer 并填写输出路径，通常为 `/tmp/tesla-sim/v4l2-back.rgb`。格式为 **1280 × 720 RGB24，每帧 2,764,800 字节**，每帧通过原子替换发布。应用只读取上游文件；源文件缺失或过期时显示等待状态，“停止输入”清除画面。重新选择有效来源即可恢复，无需重启固件。
+网址留空时会打开本地示例页，其中包含声音、文字输入、拖动和 WebGL 示例。音乐应用从中控打开，使用各自的账号登录。
 
-“固件正在接收”同时要求源帧新鲜且固件近期确实消费过 V4L2 帧。“画面已就绪”表示源正在运行，但固件摄像头页面没有打开。每次选择一个摄像头视角，目前已验证原生倒车摄像头页面。详见[回放格式与控制权](docs/replay.md)。
+<img src="docs/screenshots/embedded-browser.png" width="350" alt="中控内的 Chromium" /> <img src="docs/screenshots/theater.png" width="350" alt="原生影院目录" />
 
-## 行驶控制与车辆服务
+## 摄像头与行驶回放
 
-在“车辆控制”中选择挡位，再直接设置模拟速度。P 挡将速度和油门归零。踏板与速度独立，刹车映射为踩下／松开标记。方向盘按轮上角度输入；示意转弯半径使用 2.96 米轴距和 14.8:1 转向比。原生车速数字跟随英里／公里单位，并按整单位显示。
+在“摄像头与回放”中选择测试画面、打开视频，或连接现有 RGB 管线。在中控打开摄像头，也可以挂 R 挡进入倒车画面。
 
-“方向盘按钮”通过原生播放器接口控制音量、静音、播放／暂停和切歌。
-右侧按钮打开仪表上的音量、雨刷和语音面板；语音面板本身不提供语音识别。
-按住音量＋或－可连续调整，松开、移出按钮或切换窗口后停止；其他按钮每次按下
-执行一次。左转、右转和双闪接入仪表原生箭头，以 800 毫秒周期闪烁，选择关闭
-后熄灭两侧转向灯。
+点击“打开行车记录仪 MP4…”选择带内嵌行驶数据的录像。挡位、车速、踏板、转向和转向灯会跟随视频；暂停、跳转、倍速和循环播放同时作用于画面与数据。“接管”切回手动控制，再次播放可恢复录像输入。
 
-![真实仪表与 3D 渲染](docs/screenshots/cluster.png)
+![摄像头与回放](docs/screenshots/replay-en.png)
 
-![中控开启 Santa 后的仪表画面，以及原生音量弹窗](docs/screenshots/cluster-santa.png)
+没有录像时，可运行 `python3 scripts/make-replay-demo.py`，然后打开生成的 `build/replay-demo.mp4`。
 
-“车辆服务”按空调、车门、灯光、电量、声音、导航和轮胎分组。修改后点击“应用更改”，每一项显示固件响应。在原生车机内修改空调或声音，也会更新这份共享模型；可用偏好可从任一显示屏同步到另一屏。
+现有摄像头管线可通过原子替换文件输出 **1280 × 720 RGB24** 帧，例如 `/tmp/tesla-sim/v4l2-back.rgb`。在面板填入该路径即可连接。格式细节见[摄像头与回放说明](docs/replay.md)。
 
-四扇车门与前后备箱分别驱动原生 3D 开合状态，中控的备箱和锁车按钮会更新本地模型。
-车外灯光支持关闭、示宽灯、开启和自动模式；自动模式跟随“环境较暗”输入。
-车辆服务页提供 Service Mode 的正常进入说明。中控已通过普通访问码流程进入原生 Service Mode，状态也会同步到仪表；完整诊断网关例程和 Service Mode Plus 尚未实现。
+## 开发
 
-<img src="docs/screenshots/service-mode-center.png" width="350" alt="中控进入原生 Service Mode" />
+这是一个独立的兼容性与网络安全工程项目，涉及原生图形、输入事件、进程管理和本地模拟，所提供的固件保持不变。
 
-![仪表同步显示原生 Service Mode](docs/screenshots/service-mode-cluster.png)
-
-![原生车门和备箱开合状态](docs/screenshots/cluster-doors.png)
-
-![本地车辆服务及逐项固件反馈](docs/screenshots/services-zh.png)
-
-“已应用”表示固件本地数据接口回读了写入值。车门目前提供开闭提示和锁定状态，逐门 3D 锁扣动画仍未验证。充电与温度是输入值，不是物理模型；导航元数据也不包含路线引擎。详见[车辆服务说明](docs/vehicle-services.md)。
-
-## 工程与贡献
-
-本项目展示兼容性工程与网络安全方向的系统能力，包括图形互操作、原生事件路由、进程管理、可复现构建识别、解析器校验和运行诊断。固件文件保持不变，源码适配器连接已导出的 Qt/X11 接口与宿主图形栈。模拟器通信仅发生在本项目的本地会话内。
-
-参阅[架构](docs/ARCHITECTURE.md)、[兼容性](docs/compatibility.md)、[验证记录](docs/VALIDATION.md)和[安全边界](SECURITY.md)。截图来自实际运行的应用与固件显示；公开回放截图使用合成演示画面与数据，不包含个人录像或 GPS。
+参阅[架构](docs/ARCHITECTURE.md)、[兼容性说明](docs/compatibility.md)和[贡献指南](CONTRIBUTING.md)。
 
 ```bash
 python3 -m venv .venv
@@ -160,20 +100,8 @@ python -m pytest -q
 python scripts/build.py
 ```
 
-Windows 使用 `.venv\Scripts\Activate.ps1`。请在目标操作系统上构建；PyInstaller 不是交叉编译器。输出在 `dist/`。CI 测试和打包源码，不附带固件，也不自动发布发行版。
+Windows 使用 `.venv\Scripts\Activate.ps1` 激活环境。请在目标操作系统上构建，产物位于 `dist/`。
 
-仓库排除固件、地图、录像、浏览器配置、运行日志和凭据。欢迎提交包含复现证据与剩余限制的[贡献](CONTRIBUTING.md)。
+固件、地图、录像、浏览器配置、日志和凭据不会加入仓库。公开回放截图使用生成的演示画面。
 
-项目独立开发，与 Tesla 无隶属或背书关系。自有源码使用 MIT 许可证；固件、商标、第三方界面截图及 Qt 等依赖保留各自权利，详见[第三方声明](THIRD_PARTY_NOTICES.md)。
-
-### 实验性 MCU2 兼容模式
-
-对于 `modelsx_info2` 的 Model S/X 固件，没有精确版本适配时会使用实验性通用 profile。启动前检查双屏程序的 x86_64 ELF 格式，启用浏览器时检查媒体入口文件。检查通过不代表 ABI 或运行功能已经兼容。已验证的 2026.26.6.1 仍保留 build-ID 检查，其他平台仍需要独立启动适配。
-
-### 实验性 ICE 兼容模式
-
-设备管理器新增限时的 [QEMU 原厂内核启动检查](docs/qemu.md)。该检查**尚未实现完整固件启动及桌面功能等效**。
-
-独立的 [QEMU 虚拟桌面模式](docs/virtual-desktop.md)现已通过替代 Linux 内核运行 MCU2 真实双屏 UI 和浏览器卡片。在 Qt 面板选择 QEMU，即可使用预览、驾驶控制与摄像头回放输入。中控与仪表均使用 AMD 支持的 VirGL 加速，仪表独立窗口通过 VirtualGL 共用 GPU；WSLg 音频缓冲已通过播放和静音恢复检查，长时间音频运行与完整功能等效仍待验证。文档列有准备步骤和验证情况。
-
-固件内标识为 `product=ice`、`product-platform=mrb` 时，使用横向单屏启动。导入流程已兼容空的 product-variants。QtCar 使用原生分辨率的 raster 显示方式，原始 Godot 可视化独立运行并接入中控屏。已在 WSL Debian 上实测 2026.26.6.5 的原生界面、地图和车型显示。Chromium 与媒体进程可以启动，流媒体播放及完整功能仍未验证。旧库记录需要重新导入以更新平台识别。
+本项目与 Tesla 无隶属或背书关系。项目源码采用 MIT 许可证；固件、商标、第三方界面截图和依赖保留各自权利。详见[第三方声明](THIRD_PARTY_NOTICES.md)。

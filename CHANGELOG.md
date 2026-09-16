@@ -1,39 +1,22 @@
 # Changelog
 
-## 0.5.0 — 2026-09-16 · Material desktop and QEMU
+## 0.5.0 — 2026-09-16 · Material desktop & QEMU
 
-- Removed the upper-left wordmark from both expanded and compact control-panel navigation.
-
-- Added an experimental replacement-kernel QEMU desktop with a Debian guest builder, read-only firmware attachment, native dual windows, AMD-backed VirGL on both displays and VirtualGL GPU sharing for the independent instrument window. Added managed start, shutdown, guest simulation controls, per-display graphics reporting and stale-heartbeat rejection.
-- Connected the Qt panel to QEMU: saved engine/directory selection, dual previews, display focus, browser cards, vehicle inputs, selected media import, live RGB relay and embedded-telemetry replay. Guest requests are serialized and stale responses from a previous mode are ignored. Full feature parity remains unfinished.
-- Added buffered, on-demand WSLg audio with VM-owned cleanup, bounded queues and output diagnostics. Verified two 30-second plays and one 120-second play, firmware Chromium sound, idle/resume and Qt stop/start; long-session streaming remains unverified. Native Linux retains its existing desktop sound server.
-- Publish the firmware's speed-unit signal together with converted speed, fixing MPH values incorrectly labeled km/h on the instruments.
-- Corrected symbolic direction-enum readback so accepted gear inputs no longer report a false partial failure. Paused and ended recordings retain their last camera frame while the producer heartbeat remains healthy.
-
-- Restyled all seven native Qt pages with Material 3 inspired tonal cards, a shared color system, filled actions, switches, tabs and keyboard focus indicators.
-- Added saved system/light/dark appearance and Iris, Blue and Leaf accents. Switching appearance preserves the current page, driving controls and unapplied form edits.
-- Replaced the duplicate right navigation strip with contextual display actions in the app bar. Narrow windows use an icon rail with an appearance/language menu.
-- The display overview fits actual capture proportions and supports the single-screen ICE profile. Device descriptions wrap, camera actions fit a compact grid, and empty previews explain their next step.
-- Closing the panel cancels delayed environment checks and polling, preventing work from starting after its window is gone.
-- Added text contrast checks and theme interaction tests. Windows Qt and Debian WSLg native rendering were reviewed in English and Simplified Chinese. QEMU desktop parity remains under development.
-- Added verified, application-scoped AMD/NVIDIA/Intel selection for WSLg. A failed hardware-rendering check preserves the previous setting; host acceleration is reported separately from firmware-VM graphics.
+- **A redesigned Qt interface.** Material 3 styling, light and dark themes, three accent colors, and compact navigation for smaller windows. Appearance and language settings are saved between sessions. The logo in the upper-left corner is gone.
+- **QEMU in the device manager.** Choose a guest directory, start or stop the VM, preview both screens, and open the center or instrument window from the toolbar. The Debian guest uses a replacement Linux kernel and mounts your firmware read-only.
+- **GPU acceleration on both screens.** The MCU2 desktop uses VirGL, with VirtualGL sharing the GPU with the separate instrument window.
+- **Controls in one place.** Driving inputs, steering-wheel buttons, browser cards, camera feeds, and dashcam replay are available from the Qt panel in QEMU mode.
+- **Smoother WSLg audio.** Buffered output handles playback, releases the desktop stream during silence, and reconnects when sound resumes.
+- **Small fixes that help day to day.** Correct MPH/km/h labels, accurate gear feedback, and a held camera frame when replay is paused or finishes.
 
 ### 中文
 
-- 移除控制面板左上角标识，宽屏和紧凑导航均不再显示。
-
-- 新增实验性替代内核 QEMU 桌面：Debian 客体构建器、固件只读挂载、原生双窗口、双屏 AMD VirGL 加速及仪表独立窗口的 VirtualGL GPU 共享；加入启动、正常关机、本地模拟控制、分屏渲染器报告和过期状态检测。
-- Qt 面板接入 QEMU 模式：保存模式和目录、双屏预览、窗口聚焦、浏览器卡片、车辆输入、视频导入、实时 RGB 管线及内嵌行驶数据回放；客体请求串行处理，忽略旧模式的延迟响应。完整功能等效仍待完成。
-- WSLg 音频新增缓冲和按需输出，随虚拟机清理进程，并记录队列丢弃数据；已验证两次 30 秒和一次 120 秒播放、车机内 Chromium 声音、静音后恢复及 Qt 停止／启动。长时间流媒体播放尚未验证；原生 Linux 沿用现有音频服务。
-- 同步发送车速单位信号与转换后的数值，修复仪表将 MPH 数值标成 km/h 的问题。
-- 修复方向枚举回读导致挡位误报部分失败的问题；回放暂停或结束后，在生产进程心跳正常时保留最后摄像头帧。
-
-- 七个原生 Qt 页面统一采用 Material 3 风格，包含分层卡片、语义配色、主操作按钮、开关、标签页和键盘焦点提示。
-- 新增跟随系统、浅色、深色外观，以及鸢尾紫、晴空蓝、叶绿强调色；设置自动保存，切换主题保留当前页面、驾驶控制与未提交表单。
-- 显示窗口快捷操作移至顶部，窄窗口使用图标导航栏，并可从菜单调整外观与语言。
-- 屏幕预览按真实截图比例显示，适配 ICE 单屏；设备说明自动换行，摄像头操作重新分组，空画面提供明确提示。
-- 增加文字对比度与主题交互测试，并检查 Windows Qt / Debian WSLg 下的中英文原生渲染。QEMU 的桌面效果一致性仍在开发中。
-- 新增 WSLg 的 AMD/NVIDIA/Intel 渲染器选择，实测硬件加速成功后才保存；失败时保留旧设置，并明确区分主机加速与固件虚拟机图形支持。
+- **全新的 Qt 界面。** Material 3 风格、明暗主题、三种强调色和适合小窗口的紧凑导航。外观与语言设置自动保存，左上角 Logo 已移除。
+- **在设备管理器中使用 QEMU。** 选择客体目录后即可启动、停止虚拟机，预览双屏，或从工具栏打开中控和仪表窗口。Debian 客体使用替代 Linux 内核，固件以只读方式挂载。
+- **双屏 GPU 加速。** MCU2 桌面使用 VirGL，独立仪表窗口通过 VirtualGL 共用 GPU。
+- **控制入口集中到 Qt 面板。** QEMU 模式下可操作驾驶输入、方向盘按钮、浏览器卡片、摄像头和行车记录仪回放。
+- **改善 WSLg 音频。** 播放采用缓冲输出，静音时释放桌面音频流，有声音后自动恢复。
+- **修复日常使用中的小问题。** 仪表正确显示 MPH/km/h，挡位反馈更准确，回放暂停或结束后保留最后一帧摄像头画面。
 
 ## 0.4.4 — 2026-09-10
 
