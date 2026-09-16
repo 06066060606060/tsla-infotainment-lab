@@ -267,10 +267,11 @@ class BodyRequestRouter:
         self.pending_ack = set()
         self.report = {}
 
-    def poll(self, interface, model, typed=lambda value: value, desktop_changed=False):
+    def poll(self, interface, model, typed=lambda value: value, desktop_changed=False, readings=None):
         for name, field in BODY_REQUESTS.items():
             try:
-                ok, raw = interface.DataGetValueRequest(name, timeout=.3)
+                ok, raw = (readings[name] if readings is not None else
+                           interface.DataGetValueRequest(name, timeout=.3))
                 if not ok:
                     continue
                 value = str(raw)
@@ -436,17 +437,31 @@ class DisplayWriter:
     The small adapter is independent of dbus-python so ordinary fake display
     tests exercise rejected fields and reconnects without launching firmware.
     """
-    def __init__(self, interface, typed=lambda value: value):
+    def __init__(self, interface, typed=lambda value: value, batch=None):
         self.interface = interface
         self.typed = typed
         self.cache = {}
         self.supported = {}
         self.feedback = {}
+        self.batch = batch
 
     def read(self, name):
+        return self.read_many([name])[name]
+
+    def read_many(self, names):
+        names = tuple(dict.fromkeys(names))
+        requested = {name: (name,) for name in names if self.supported.get(name) is not False}
+        if self.batch:
+            replies = self.batch(self.interface, 'DataGetValueRequest', requested)
+        else:
+            replies = {name: self.interface.DataGetValueRequest(*args, timeout=.3)
+                       for name, args in requested.items()}
+        return {name: self._decode(name, *replies[name]) if name in replies else (False, None)
+                for name in names}
+
+    def _decode(self, name, ok, raw):
         if self.supported.get(name) is False:
             return False, None
-        ok, raw = self.interface.DataGetValueRequest(name, timeout=.3)
         self.supported[name] = bool(ok)
         if not ok:
             return False, None
@@ -460,6 +475,8 @@ class DisplayWriter:
         return bool(ok), "" if ok and str(raw) == "" else decode_value(raw)
 
     def apply(self, groups, verify_cached=False):
+        if self.batch:
+            return self._apply_batch(groups, verify_cached)
         report, details = {}, {}
         for field, values in groups.items():
             statuses = {}
@@ -490,5 +507,52 @@ class DisplayWriter:
             kinds = set(statuses.values())
             report[field] = ("local-model" if not kinds else "accepted" if kinds == {"accepted"}
                              else "partial" if "accepted" in kinds else sorted(kinds)[0])
+        self.feedback = report
+        return report, details
+
+    def _apply_batch(self, groups, verify_cached):
+        requested, statuses = {}, {}
+        for values in groups.values():
+            for name, value in values.items():
+                if name in requested and not equivalent(requested[name], value):
+                    raise ValueError('Conflicting local display values: ' + name)
+                requested[name] = value
+        reads = []
+        for name, value in requested.items():
+            if self.supported.get(name) is False:
+                statuses[name] = 'unsupported'
+            elif name in self.cache and equivalent(self.cache[name], value) and not verify_cached:
+                statuses[name] = 'accepted'
+            else:
+                reads.append(name)
+        actual = self.read_many(reads)
+        writes = {}
+        for name, (ok, value) in actual.items():
+            if not ok:
+                statuses[name] = 'unsupported'
+            elif equivalent(value, requested[name]):
+                statuses[name] = 'accepted'
+                self.cache[name] = requested[name]
+            else:
+                # Invalidate before sending: a failed or timed-out write must
+                # not leave an old cache entry claiming a value still exists.
+                self.cache.pop(name, None)
+                writes[name] = (name, self.typed(requested[name]))
+        replies = self.batch(self.interface, 'DataSetValueRequest', writes)
+        confirmed = self.read_many(name for name, reply in replies.items() if reply[0])
+        for name, reply in replies.items():
+            if not reply[0]:
+                statuses[name] = 'rejected'
+                continue
+            ok, value = confirmed[name]
+            statuses[name] = 'accepted' if ok and equivalent(value, requested[name]) else 'mismatch'
+            if statuses[name] == 'accepted':
+                self.cache[name] = requested[name]
+        details = {field: {name: statuses[name] for name in values} for field, values in groups.items()}
+        report = {}
+        for field, values in details.items():
+            kinds = set(values.values())
+            report[field] = ('local-model' if not kinds else 'accepted' if kinds == {'accepted'}
+                             else 'partial' if 'accepted' in kinds else sorted(kinds)[0])
         self.feedback = report
         return report, details

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.1 — 2026-09-16 · Startup and display fixes
+
+- Fixed a startup error that could close the native Linux/WSL session before either screen appeared.
+- Batched display updates so driving inputs and shared preferences spend less time waiting on the center and instrument screens.
+- Fixed QEMU screen power management stalling the center display after about ten minutes without mouse or keyboard input.
+- Reduced the time large QEMU previews occupy the control connection. Failed display updates now report an error and retry instead of retaining a successful status.
+
+### 中文
+
+- 修复原生 Linux / WSL 会话启动时缺少模块、双屏无法打开的问题。
+- 改为批量更新显示数据，减少驾驶输入和共享设置在中控与仪表之间的等待。
+- 修复 QEMU 中控在约十分钟没有鼠标或键盘操作后卡顿的问题。
+- 缩短 QEMU 大幅预览图占用控制连接的时间；显示更新失败时会报告错误并重试，不再保留之前的成功状态。
+
 ## 0.5.0 — 2026-09-16 · Material desktop & QEMU
 
 - **A redesigned Qt interface.** Material 3 styling, light and dark themes, three accent colors, and compact navigation for smaller windows. Appearance and language settings are saved between sessions. The logo in the upper-left corner is gone.

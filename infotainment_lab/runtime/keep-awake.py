@@ -17,9 +17,10 @@ from simulation import Simulation, display_values as driving_values, indicator_v
 from vehicle_services import (VehicleServices, REQUEST_FIELDS, CAPABILITIES, DisplayWriter,
                               display_values, equivalent, speed_display_values, replay_location,
                               MEDIA_NETWORK_SERVICES, media_network_values)
-from vehicle_services import BodyRequestRouter, decode_service_request
+from vehicle_services import BodyRequestRouter, BODY_REQUESTS, decode_service_request
+from display_bus import connect, call_many
 
-bus = dbus.bus.BusConnection(os.environ['DBUS_SESSION_BUS_ADDRESS'])
+bus = connect(os.environ['DBUS_SESSION_BUS_ADDRESS'])
 state = Path(os.environ['TESLA_NATIVE_STATE'])
 title_prefix = os.environ.get('TESLA_NATIVE_TITLE', 'Infotainment Lab | Center')
 services = os.environ.get('TESLA_DV_SERVICES', 'com.tesla.CenterDisplay').split(',')
@@ -134,6 +135,7 @@ writers, owners, request_baseline = {}, {}, {}
 media_writers, media_owners, media_network_report = {}, {}, {}
 controls = Simulation()
 control_report, service_report, service_details, errors = {}, {}, {}, {}
+control_errors = {}
 vehicle_profile_report = {}
 volume_max, distance_units = {}, {}
 config_stamp = None
@@ -160,7 +162,7 @@ while True:
                         media_network_report.pop(service, None)
                     elif media_owners.get(service) != owner:
                         iface = dbus.Interface(bus.get_object(service, '/LocalDataValue'), 'com.tesla.LocalDataValue')
-                        media_writers[service], media_owners[service] = DisplayWriter(iface, typed), owner
+                        media_writers[service], media_owners[service] = DisplayWriter(iface, typed, batch=call_many), owner
                         next_network = 0
                 except dbus.DBusException as exc:
                     errors[service] = str(exc)
@@ -171,6 +173,7 @@ while True:
                         writers.pop(service, None)
                         owners.pop(service, None)
                         control_report.pop(service, None)
+                        control_errors.pop(service, None)
                         service_report.pop(service, None)
                         service_details.pop(service, None)
                         if service == 'com.tesla.CenterDisplay':
@@ -179,7 +182,7 @@ while True:
                     if owners.get(service) != owner:
                         iface = dbus.Interface(bus.get_object(service, '/LocalDataValue'), 'com.tesla.LocalDataValue')
                         vehicle_profile_report[service] = apply_vehicle_profile(iface)
-                        writer = DisplayWriter(iface, typed)
+                        writer = DisplayWriter(iface, typed, batch=call_many)
                         ok, maximum = writer.read('GUI_audioVolumeMax')
                         volume_max[service] = maximum if ok and isinstance(maximum, (float, int)) and maximum > 0 else 10.333
                         request_baseline[service] = {}
@@ -211,18 +214,25 @@ while True:
         if tick >= next_requests:
             next_requests = tick + .25
             changes = {}
+            body_readings = None
             for service in reversed(services):  # Center wins simultaneous changes.
                 writer = writers.get(service)
                 if not writer:
                     continue
                 baseline = request_baseline.setdefault(service, {})
                 try:
-                    ok, units = writer.read('GUI_distanceUnits')
+                    names = ['GUI_distanceUnits', *REQUEST_FIELDS.values()]
+                    if service == 'com.tesla.CenterDisplay':
+                        names.extend(BODY_REQUESTS)
+                    readings = writer.read_many(names)
+                    if service == 'com.tesla.CenterDisplay':
+                        body_readings = readings
+                    ok, units = readings['GUI_distanceUnits']
                     if distance_units.get(service) != units:
                         last_controls = None
                     distance_units[service] = units if ok else 'Miles'
                     for field, name in REQUEST_FIELDS.items():
-                        ok, value = writer.read(name)
+                        ok, value = readings[name]
                         if not ok or value is None:
                             continue
                         old = baseline.get(name)
@@ -236,15 +246,16 @@ while True:
                                 changes[field] = value
                             except (TypeError, ValueError):
                                 pass
-                except dbus.DBusException as exc:
+                except (dbus.DBusException, OSError) as exc:
                     errors[service] = str(exc)
             if changes:
                 updated = model.patched(changes)
                 if updated != model:
                     model, service_dirty, last_source = updated, True, 'native-ui'
             center_writer = writers.get('com.tesla.CenterDisplay')
-            if center_writer:
-                updated = body_router.poll(center_writer.interface, model, typed, desktop_changed=changed_config)
+            if center_writer and body_readings is not None:
+                updated = body_router.poll(center_writer.interface, model, typed,
+                                           desktop_changed=changed_config, readings=body_readings)
                 if updated != model:
                     model, service_dirty, last_source = updated, True, 'native-ui'
 
@@ -263,14 +274,16 @@ while True:
 
         for service, writer in tuple(writers.items()):
             try:
-                if current_controls != last_controls or tick >= next_slow:
+                if current_controls != last_controls or tick >= next_slow or service in control_errors:
                     driving = driving_values(controls)
                     driving['indicator'] = indicator_values(controls.indicator, tick - indicator_since)
                     # Keep ApViz motion inputs (signed/replay speed) while
                     # applying the display-unit-specific speedometer values.
                     driving['speed_kph'].update(
                         speed_display_values(controls.speed_kph, distance_units.get(service, 'Miles')))
-                    control_report[service], _ = writer.apply(driving, verify_cached=tick >= next_slow)
+                    control_report[service], _ = writer.apply(
+                        driving, verify_cached=tick >= next_slow or service in control_errors)
+                    control_errors.pop(service, None)
                 indicator_report, _ = writer.apply({'indicator': indicator_values(controls.indicator, tick - indicator_since)})
                 control_report.setdefault(service, {}).update(indicator_report)
                 if (current_gps != last_gps or tick >= next_slow) and gps:
@@ -288,14 +301,17 @@ while True:
                     service_details.setdefault(service, {}).update(details)
                     # Record our writes immediately, so they cannot be mistaken
                     # for a user request in the next 250ms native-input poll.
-                    request_baseline[service] = {name: writer.read(name)[1] for name in REQUEST_FIELDS.values()}
+                    request_baseline[service] = {name: result[1] for name, result in
+                                                 writer.read_many(REQUEST_FIELDS.values()).items()}
                 if tick >= next_slow:
                     writer.apply({'awake': awake}, verify_cached=True)
                 if tick >= next_network:
                     writer.apply({'network': network_values(snapshot)}, verify_cached=True)
                 errors.pop(service, None)
-            except (dbus.DBusException, ValueError, TypeError) as exc:
+            except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
                 errors[service] = str(exc)
+                control_errors[service] = str(exc)
+                control_report[service] = {field: 'error' for field in current_controls}
         last_controls, last_gps = current_controls, current_gps
         if tick >= next_services or service_dirty:
             next_services, service_dirty = tick + 2, False
@@ -307,13 +323,14 @@ while True:
                     _, detail = writer.apply({'network': media_network_values(snapshot)}, verify_cached=True)
                     media_network_report[service] = detail['network']
                     errors.pop(service, None)
-                except (dbus.DBusException, ValueError, TypeError) as exc:
+                except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
                     errors[service] = str(exc)
             next_network = tick + 30
             last_network_stamp = snapshot.get('checked_at')
         if tick >= next_report:
             now = time.time()
             atomic_json('controls-feedback.json', {'requested': current_controls, 'firmware': control_report,
+                                                   'errors': control_errors,
                                                    'updated_at': now, 'tick_ms': 50,
                                                    'apply_duration_ms': round((time.monotonic()-tick)*1000, 1)})
             atomic_json('vehicle-services-feedback.json', {

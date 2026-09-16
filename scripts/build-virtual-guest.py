@@ -50,7 +50,12 @@ def run(*args):
 
 
 def configure_displays(root):
-    """One X server per GPU prevents cross-screen firmware window ownership."""
+    """Private VM screens stay awake while inputs arrive outside X11.
+
+    Driving controls and replay use local IPC, so they do not reset Xorg's
+    keyboard/mouse idle timer. DPMS on these virtual outputs can stall the
+    center's EGL buffer queue. Host desktop power settings remain independent.
+    """
     def write(name, content, mode=0o644):
         p = root / name
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +80,7 @@ EndSection
 ''')
     write('usr/local/bin/lab-xclient', '''#!/bin/sh
 set -eu
-Xorg :1 -config /etc/X11/lab-cluster.conf -isolateDevice PCI:0:8:0 vt1 -sharevts -novtswitch -noreset -nolisten tcp -auth "$XAUTHORITY" >/var/log/lab-cluster-xorg.log 2>&1 &
+Xorg :1 -config /etc/X11/lab-cluster.conf -isolateDevice PCI:0:8:0 vt1 -sharevts -novtswitch -noreset -s 0 -dpms -nolisten tcp -auth "$XAUTHORITY" >/var/log/lab-cluster-xorg.log 2>&1 &
 cluster_pid=$!
 trap 'kill "$cluster_pid" 2>/dev/null || true' EXIT
 ready=false
@@ -111,7 +116,7 @@ cookie=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')
 xauth -f "$XAUTHORITY" add :0 . "$cookie"
 xauth -f "$XAUTHORITY" add :1 . "$cookie"
 chown lab:lab "$XAUTHORITY"
-exec xinit /usr/local/bin/lab-xclient -- /usr/bin/Xorg :0 -config /etc/X11/lab-center.conf -isolateDevice PCI:0:1:0 vt1 -nolisten tcp -keeptty -auth "$XAUTHORITY"
+exec xinit /usr/local/bin/lab-xclient -- /usr/bin/Xorg :0 -config /etc/X11/lab-center.conf -isolateDevice PCI:0:1:0 vt1 -s 0 -dpms -nolisten tcp -keeptty -auth "$XAUTHORITY"
 ''', 0o755)
 
 

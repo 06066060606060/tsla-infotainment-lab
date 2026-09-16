@@ -1,5 +1,28 @@
 # Validation record
 
+## Version 0.5.1: startup and display fixes (2026-09-16)
+
+- Native Linux/WSL startup was failing before the supervisor loaded because the
+  staging list omitted `display_graphics.py`. Staging now includes all top-level
+  Python modules. A subprocess check imports the staged supervisor and display
+  helpers from a temporary directory without the source checkout on its path.
+- The running MCU2 native session opened both AMD D3D12-accelerated displays.
+  Six Qt driving scenarios covered D/R/N/P, speed, throttle, brake, steering and
+  indicators, with matching readback on both displays and no control errors.
+- The same six scenarios passed on the QEMU MCU2 guest. Qt input to observed
+  feedback ranged from 1.89 to 3.11 seconds, including guest-channel polling;
+  this does not establish real-time input latency.
+- Center-to-cluster and cluster-to-center Santa preference changes propagated
+  in 129 ms and 190 ms respectively; the original preference was restored.
+- Tracing the stalled QEMU center showed waits inside the Mesa DRI3/EGL buffer
+  path while Xorg reported DPMS Monitor Off. Both private guest X servers now
+  start with the screen-saver timeout disabled and without DPMS. After a desktop
+  service restart, feedback remained fresh beyond the previous ten-minute idle
+  trigger, with no display-link or control errors. Host power settings are unchanged.
+- Buffered guest-agent reads handle fragmented large replies, preserve request
+  IDs and response size limits, and flush each outgoing request. Live preview
+  requests took about 524–527 ms versus 688–701 ms before the change.
+
 ## Version 0.5.0: Material desktop and QEMU (2026-09-16)
 
 - Linux: 230 tests passed. Windows: 205 passed, 25 Linux-only checks skipped.

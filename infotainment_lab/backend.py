@@ -183,6 +183,16 @@ def status() -> dict:
     return record
 
 
+def stage_runtime(destination: Path):
+    """Keep session sources on Linux storage after a packaged launcher exits."""
+    destination.mkdir(parents=True, exist_ok=True)
+    for source in sorted(PACKAGE.glob('*.py')):
+        shutil.copy2(source, destination / source.name)
+    shutil.copy2(PACKAGE / 'profiles.json', destination / 'profiles.json')
+    shutil.copytree(PACKAGE / 'runtime', destination / 'runtime', dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+
+
 def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     if os.getuid() == 0:
         raise RuntimeError("Run the application as a normal desktop user, not root.")
@@ -229,11 +239,7 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     # Stage only our sources into stable Linux storage. A packaged Windows
     # application's temporary extraction directory must not own the session.
     runtime = DATA / "engine"
-    runtime.mkdir(parents=True, exist_ok=True)
-    for name in ("supervisor.py", "core.py", "profiles.json", "simulation.py", "camera_source.py", "browser.py", "replay.py", "vehicle_services.py", "firmware_fonts.py", "host_graphics.py"):
-        shutil.copy2(PACKAGE / name, runtime / name)
-    shutil.copytree(PACKAGE / "runtime", runtime / "runtime", dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    stage_runtime(runtime)
     config = {"firmware": str(root), "single_display": bool(profile.get("single_display")), "firmware_version": item["version"], "firmware_id": identifier, "map_id": map_id, "state": str(session), "profile": profile["id"],
               "browser": browser, "cluster": cluster, "maps": maps,
               "display": os.environ.get("DISPLAY", ":0"), "pulse": os.environ.get("PULSE_SERVER", ""),

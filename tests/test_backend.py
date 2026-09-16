@@ -13,6 +13,23 @@ if os.name != 'nt':
     import supervisor
 
 
+def test_staged_session_imports_without_source_checkout(tmp_path):
+    import subprocess
+
+    runtime = tmp_path / 'engine'
+    backend.stage_runtime(runtime)
+    # A packaged launcher may disappear before the user service starts. Import
+    # from its persistent copy, with no checkout or inherited Python path.
+    smoke = runtime / 'import_check.py'
+    smoke.write_text('import supervisor, display_bus, simulation, replay, vehicle_services\n')
+    env = {key: value for key, value in os.environ.items() if not key.startswith('PYTHON')}
+    result = subprocess.run([sys.executable, '-E', str(smoke)], cwd=tmp_path,
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (runtime / 'profiles.json').is_file()
+    assert (runtime / 'runtime/keep-awake.py').is_file()
+
+
 def test_media_port_conflict_reports_the_port_without_starting_services(monkeypatch):
     import socket
     class BusyPort:

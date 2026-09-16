@@ -9,10 +9,11 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from vehicle_services import PREFERENCES, CENTER_CHANNELS, PreferenceSync, DisplayWriter, decode_value, equivalent
+from display_bus import connect, call_many
 
 state = Path(os.environ['TESLA_NATIVE_STATE'])
 firmware = Path(os.environ['TESLA_FIRMWARE']).resolve()
-bus = dbus.bus.BusConnection(os.environ['DBUS_SESSION_BUS_ADDRESS'])
+bus = connect(os.environ['DBUS_SESSION_BUS_ADDRESS'])
 sync = PreferenceSync()
 owners = {}
 readers = {}
@@ -88,13 +89,22 @@ while True:
                 owners[short] = owner
                 if owner:
                     restarted.add(short)
-                    readers[short] = DisplayWriter(interfaces[short])
+                    readers[short] = DisplayWriter(interfaces[short], batch=call_many)
                 else:
                     readers.pop(short, None)
-        for name in (*PREFERENCES, *CENTER_CHANNELS):
+        observed, read_errors = {}, {}
+        names = (*PREFERENCES, *CENTER_CHANNELS)
+        for short, reader in readers.items():
             try:
-                cok, cv = get(interfaces['center'], name, 'center')
-                iok, iv = get(interfaces['cluster'], name, 'cluster')
+                observed[short] = reader.read_many(names)
+            except (dbus.DBusException, OSError, TypeError, ValueError) as exc:
+                read_errors[short] = exc
+        for name in names:
+            try:
+                if read_errors:
+                    raise next(iter(read_errors.values()))
+                cok, cv = observed.get('center', {}).get(name, (False, None))
+                iok, iv = observed.get('cluster', {}).get(name, (False, None))
                 record = {'center': cv, 'cluster': iv, 'status': 'unavailable'}
                 if not cok or not iok or (cv is None and iv is None):
                     record['status'] = 'unsupported' if interfaces['center'] and interfaces['cluster'] else 'waiting-display'

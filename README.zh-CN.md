@@ -4,7 +4,7 @@
 
 在自己的电脑上运行车机软件，把中控和仪表盘作为独立桌面窗口打开。原生 Qt 应用负责固件管理、驾驶控制、浏览器、摄像头和行驶记录回放。
 
-支持 Linux，以及安装了 Debian WSL2 的 Windows。**0.5.0** 带来 Material 3 界面和 QEMU 桌面模式。
+支持 Linux，以及安装了 Debian WSL2 的 Windows。Material 3 控制面板提供原生和 QEMU 两种启动方式。**0.5.1** 修复原生启动和 QEMU 闲置后的显示卡顿。
 
 ![设备管理器](docs/screenshots/material-devices-en.png)
 

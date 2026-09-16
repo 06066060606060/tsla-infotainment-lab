@@ -177,11 +177,15 @@ def guest_execute(directory, argv, timeout=15):
             with lifecycle_lock(directory):
                 with verify_identity(directory, read_state(directory)):
                     sock.connect(str(directory / 'guest-agent.sock'))
-            with sock.makefile('rwb', buffering=0) as stream:
+            # Preview and status replies can be hundreds of kilobytes. An
+            # unbuffered readline issues a socket read for every byte, holding
+            # the sole guest channel while controls wait behind the preview.
+            with sock.makefile('rwb') as stream:
                 def call(name, **arguments):
                     token = uuid.uuid4().hex
                     stream.write((json.dumps({'execute': name, 'arguments': arguments,
                                               'id': token}) + '\n').encode())
+                    stream.flush()
                     line = stream.readline(8 * 1024 * 1024)
                     if not line or len(line) >= 8 * 1024 * 1024:
                         raise RuntimeError('Guest agent closed or exceeded the response limit.')

@@ -9,6 +9,21 @@ builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 
 
+def test_private_vm_displays_stay_awake_without_changing_host_power_settings(tmp_path):
+    import shlex
+    builder.configure_displays(tmp_path)
+    for filename, prefix in [('lab-xclient', 'Xorg :1'), ('lab-xorg', 'exec xinit ')]:
+        content = (tmp_path / 'usr/local/bin' / filename).read_text()
+        line = next(line for line in content.splitlines() if line.startswith(prefix))
+        argv = shlex.split(line)
+        assert argv[argv.index('-s') + 1] == '0'
+        assert '-dpms' in argv
+        assert '-auth' in argv and argv[argv.index('-nolisten') + 1] == 'tcp'
+    assert set(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob('*') if p.is_file()) == {
+        'etc/X11/lab-center.conf', 'etc/X11/lab-cluster.conf',
+        'usr/local/bin/lab-xclient', 'usr/local/bin/lab-xorg'}
+
+
 def test_package_integrity_is_checked_before_any_guest_install(tmp_path, monkeypatch):
     monkeypatch.setattr(builder.urllib.request, 'urlopen', lambda *a, **kw: io.BytesIO(b'wrong package'))
     calls = []

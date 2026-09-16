@@ -90,6 +90,16 @@ saving the application preference: / WSLg 下可先验证并保存 AMD 渲染器
 python3 -m infotainment_lab.host_graphics AMD
 ```
 
+## Updating the guest / 更新客体
+
+The guest disk contains its own copy of the runtime. To pick up guest-side fixes
+from a new release, build into a new directory with that release, stop the old VM,
+and select the new directory in the device manager. Keep the previous directory
+if you want to switch back.
+
+客体磁盘保存了一份独立的运行代码。升级后，请用新版在新目录中构建客体，
+停止旧虚拟机，再从设备管理器选择新目录。保留旧目录即可随时切回。
+
 ## Launch and stop / 启动与关机
 
 In the Qt device manager, choose **QEMU virtual machine**, select the prepared

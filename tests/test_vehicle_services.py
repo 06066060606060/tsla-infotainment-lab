@@ -155,9 +155,18 @@ class FakeDisplay:
         return True
 
 
-def test_display_acknowledgement_requires_readback_not_just_set_success():
+def batch_calls(interface, method, arguments):
+    result = {}
+    for name, args in arguments.items():
+        value = getattr(interface, method)(*args, timeout=.3)
+        result[name] = value if isinstance(value, tuple) else (value,)
+    return result
+
+
+@pytest.mark.parametrize('batch', [None, batch_calls])
+def test_display_acknowledgement_requires_readback_not_just_set_success(batch):
     display = FakeDisplay()
-    writer = DisplayWriter(display)
+    writer = DisplayWriter(display, batch=batch)
     report, detail = writer.apply({"drive": {"speed": 22}, "settings": {"mute": True},
                                    "absent": {"unknown": 1}, "refused": {"rejected": 2},
                                    "not_applied": {"ignored": 3}, "stored": {}})
@@ -186,9 +195,10 @@ def test_speed_unit_enum_readback_matches_the_requested_display_label(label, val
     assert display.writes == []
 
 
-def test_unchanged_control_frames_do_no_bus_io_but_periodic_verification_recovers_drift():
+@pytest.mark.parametrize('batch', [None, batch_calls])
+def test_unchanged_control_frames_do_no_bus_io_but_periodic_verification_recovers_drift(batch):
     display = FakeDisplay()
-    writer = DisplayWriter(display)
+    writer = DisplayWriter(display, batch=batch)
     values = {"drive": {"speed": 50}}
     writer.apply(values)
     before = len(display.reads), len(display.writes)
@@ -198,6 +208,49 @@ def test_unchanged_control_frames_do_no_bus_io_but_periodic_verification_recover
     writer.apply(values, verify_cached=True)
     assert display.values["speed"] == 50
     assert len(display.writes) == before[1] + 1
+
+
+def test_batch_write_uses_three_roundtrips_and_keeps_failed_values_retryable():
+    display = FakeDisplay()
+    calls = []
+
+    def batch(interface, method, arguments):
+        calls.append((method, tuple(arguments)))
+        return batch_calls(interface, method, arguments)
+
+    writer = DisplayWriter(display, batch=batch)
+    writer.apply({'drive': {'speed': 25}, 'sound': {'mute': True}})
+    assert calls == [('DataGetValueRequest', ('speed', 'mute')),
+                     ('DataSetValueRequest', ('speed', 'mute')),
+                     ('DataGetValueRequest', ('speed', 'mute'))]
+    display.values['speed'] = 0
+
+    def failing_batch(interface, method, arguments):
+        if method == 'DataSetValueRequest':
+            raise TimeoutError('display temporarily unresponsive')
+        return batch_calls(interface, method, arguments)
+
+    writer.batch = failing_batch
+    with pytest.raises(TimeoutError):
+        writer.apply({'drive': {'speed': 25}}, verify_cached=True)
+    assert 'speed' not in writer.cache
+    assert writer.supported['speed'] is True
+    writer.batch = batch_calls
+    assert writer.apply({'drive': {'speed': 25}})[0]['drive'] == 'accepted'
+    assert display.values['speed'] == 25
+
+
+def test_failed_batch_read_does_not_poison_support_detection():
+    def batch(interface, method, arguments):
+        raise TimeoutError('display temporarily unresponsive')
+
+    display = FakeDisplay()
+    writer = DisplayWriter(display, batch=batch)
+    with pytest.raises(TimeoutError):
+        writer.read_many(['speed', 'unknown'])
+    assert writer.supported == {}
+    writer.batch = batch_calls
+    assert writer.read_many(['speed', 'unknown']) == {'speed': (True, 0), 'unknown': (False, None)}
 
 
 def test_unsupported_reads_are_cached_until_the_display_owner_restarts():

@@ -4,7 +4,7 @@
 
 Run infotainment software on your own computer, with the center display and instrument cluster in separate desktop windows. A native Qt app handles your firmware library, driving controls, browser windows, cameras, and recorded drives.
 
-Infotainment Lab runs on Linux and Windows with Debian WSL2. Version **0.5.0** adds a Material 3 interface and a QEMU desktop mode.
+Infotainment Lab runs on Linux and Windows with Debian WSL2. The Material 3 control panel supports native and QEMU desktop sessions. **0.5.1** fixes native startup and QEMU idle-display stalls.
 
 ![Device manager with the light theme](docs/screenshots/material-devices-en.png)
 
