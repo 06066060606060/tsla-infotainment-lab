@@ -1,4 +1,5 @@
 """State projection onto lab frames, and the service's control contract."""
+import json
 import os
 from pathlib import Path
 import sys
@@ -258,3 +259,21 @@ def test_controls_write_back_is_skipped_when_not_following_the_session(service, 
                     'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
     assert service.simulation.gear == 'N'
     assert not (tmp_path / 'controls.json').exists()
+
+
+def test_periodic_frames_do_not_take_ownership_from_replay(service, tmp_path):
+    from core import atomic_json
+
+    atomic_json(tmp_path / 'replay-request.json', {'action': 'play'})
+    for _ in range(40):
+        service.step()
+    request = json.loads((tmp_path / 'replay-request.json').read_text())
+    assert request['action'] == 'play'  # Our own transmitted frames must not read back.
+    assert not (tmp_path / 'controls.json').exists()
+    assert not [item for item in service.applied if 'controls' in item]
+
+
+def test_a_frame_read_from_the_bus_still_applies(service):
+    frame = can_database.message('LAB_driveState').encode({'gear': 'R', 'speed_kph': 4})
+    service.bus._dispatch(frame, 'recv')
+    assert service.simulation.gear == 'R'

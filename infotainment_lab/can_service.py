@@ -59,8 +59,15 @@ class GatewayService:
         self.bus.subscribe(self._feedback)
 
     # -- state feedback ---------------------------------------------------
-    def _feedback(self, frame: Frame) -> None:
-        """Accepted inbound requests update local state, the same as the UI would."""
+    def _feedback(self, frame: Frame, origin: str = "send") -> None:
+        """Accepted inbound requests update local state, the same as the UI would.
+
+        Frames this service transmits from its own state are ignored: reading
+        them back would fight the session, and a drive frame would take
+        ownership away from replay on every tick.
+        """
+        if origin == "periodic":
+            return
         definition = can_database.lookup(frame.channel, frame.identifier, self.gateway.table)
         if not definition or definition.name not in INBOUND:
             return
@@ -227,7 +234,7 @@ class GatewayService:
             with self.lock:
                 sim, services = self.simulation, self.services
             for frame in self.transmitter.tick(sim, services):
-                self.bus.send(frame)
+                self.bus.send(frame, "periodic")
 
     def serve(self) -> None:
         path = socket_path(self.state)

@@ -198,7 +198,7 @@ class SecurityGateway:
             return self._record(Decision(frame, candidates[0].name, False,
                                          f"identifier 0x{frame.identifier:03X} is not in the route filter"))
 
-    def _on_bus_frame(self, frame: Frame) -> None:
+    def _on_bus_frame(self, frame: Frame, origin: str = "send") -> None:
         """Forward a channel frame to the Ethernet queue and any channel mirror."""
         for route in self.routes_from(frame.channel):
             if not route.accepts(frame):
@@ -210,7 +210,9 @@ class SecurityGateway:
                 self.counts["routed"] += 1
             elif route.destination != frame.channel:
                 self.counts["routed"] += 1
-                self.bus.send(Frame(frame.identifier, frame.data, route.destination, frame.extended))
+                # A mirror carries the origin, so a periodic frame stays periodic.
+                self.bus.send(Frame(frame.identifier, frame.data, route.destination,
+                                    frame.extended), origin)
 
     def drain(self, limit: int = 256) -> list[Frame]:
         with self._lock:

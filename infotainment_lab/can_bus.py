@@ -111,24 +111,29 @@ class SoftwareBus:
         except KeyError as exc:
             raise ValueError(f"Unknown CAN channel {name!r}.") from exc
 
-    def send(self, frame: Frame) -> Frame:
-        channel = self.channel(frame.channel)
-        channel.transmitted += 1
-        channel.record(frame)
+    def _dispatch(self, frame: Frame, origin: str) -> None:
+        """Hand a frame to every listener, saying where it came from.
+
+        Listeners need the origin: a frame this process transmits from its own
+        state must not be read back as a request to change that state.
+        """
         with self._lock:
             listeners = list(self.listeners)
         for listener in listeners:
-            listener(frame)
+            listener(frame, origin)
+
+    def send(self, frame: Frame, origin: str = "send") -> Frame:
+        channel = self.channel(frame.channel)
+        channel.transmitted += 1
+        channel.record(frame)
+        self._dispatch(frame, origin)
         return frame
 
     def inject(self, frame: Frame) -> Frame:
         """Present a frame as if another ECU had produced it."""
         channel = self.channel(frame.channel)
         channel.record(frame)
-        with self._lock:
-            listeners = list(self.listeners)
-        for listener in listeners:
-            listener(frame)
+        self._dispatch(frame, "inject")
         return frame
 
     def subscribe(self, callback) -> None:
@@ -175,15 +180,24 @@ class SocketCanBus(SoftwareBus):
             if exc.errno not in (errno.ENOBUFS, errno.EAGAIN):
                 raise
 
-    def send(self, frame: Frame) -> Frame:
+    def send(self, frame: Frame, origin: str = "send") -> Frame:
+        """Write to the interface, then trace and dispatch it locally.
+
+        A raw CAN socket does not read back its own frames, so local traffic is
+        recorded and dispatched here. Doing it in software instead of enabling
+        CAN_RAW_RECV_OWN_MSGS keeps the origin of each frame exact.
+        """
         channel = self.channel(frame.channel)
         self._write(frame)
         channel.transmitted += 1
+        channel.record(frame)
+        self._dispatch(frame, origin)
         return frame
 
     def inject(self, frame: Frame) -> Frame:
-        self.channel(frame.channel)
+        self.channel(frame.channel).record(frame)
         self._write(frame)
+        self._dispatch(frame, "inject")
         return frame
 
     def poll(self, timeout: float = .01) -> list[Frame]:
@@ -213,8 +227,7 @@ class SocketCanBus(SoftwareBus):
                 self.channels[name].record(frame)
                 frames.append(frame)
         for frame in frames:
-            for listener in list(self.listeners):
-                listener(frame)
+            self._dispatch(frame, "recv")  # Produced outside this process.
         return frames
 
     def close(self) -> None:

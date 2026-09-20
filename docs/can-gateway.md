@@ -80,6 +80,23 @@ flag only clears or leaves the pedal; it cannot restore a pedal percentage. A
 request whose content is not a possible vehicle state — 40 km/h while in park —
 is counted as blocked and not applied.
 
+## Frame origin
+
+Every frame reaching a listener carries where it came from: `periodic` for the
+frames this service transmits from session state, `send` for a local write that
+crossed the gateway, `inject` for one presented as another ECU, and `recv` for
+one read from a SocketCAN interface. Only the last three can change local
+state; reading back our own periodic traffic would fight the session and would
+take ownership away from replay on every tick.
+
+A raw CAN socket does not read back what it writes, so locally sent and
+injected frames are traced and dispatched in software rather than by enabling
+`CAN_RAW_RECV_OWN_MSGS`. The trace and the state feedback therefore behave
+identically on both transports.
+
+After pulling a change, restart both the desktop session and the CAN service:
+the service is a long-lived process and keeps running the code it started with.
+
 ## Running it
 
 One privileged step, only if you want real SocketCAN interfaces:
