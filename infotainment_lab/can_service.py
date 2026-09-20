@@ -28,6 +28,7 @@ from vehicle_can import (INBOUND, PeriodicTransmitter, controls_patch, snapshot,
 from vehicle_services import VehicleServices
 
 SOCKET_NAME = "can-gateway.sock"
+SERVICE_REVISION = 3  # Bump whenever the service protocol or behaviour changes.
 TICK_S = .005
 ACTIONS = frozenset(("status", "send", "trace", "challenge", "unlock", "lock",
                      "state", "snapshot", "load-dbc", "stop"))
@@ -217,7 +218,8 @@ class GatewayService:
                      "transmit": self.transmit, "follow_session": self.follow_session,
                      "state_source": "session" if self.follow_session else "panel",
                      "recent_state_changes": self.applied[-5:]}
-        return {"service": "running", "environment": backend_report(),
+        return {"service": "running", "revision": SERVICE_REVISION,
+                "environment": backend_report(),
                 "bridge": {"endpoint": list(self.bridge.endpoint), "peers": len(self.bridge.peers)} if self.bridge else {},
                 "definitions": [{"name": m.name, "channel": m.channel, "id": f"0x{m.identifier:03X}",
                                  "period_ms": m.period_ms, "signals": [s.name for s in m.signals]}

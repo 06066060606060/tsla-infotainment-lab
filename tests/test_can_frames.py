@@ -105,10 +105,10 @@ def test_dbc_reader_parses_layout(tmp_path):
         'BO_ 291 EXAMPLE_status: 8 VECTOR__INDEPENDENT\n'
         ' SG_ Speed : 8|12@1+ (0.1,0) [0|400] "km/h" Receiver\n'
         ' SG_ Angle : 24|14@1- (0.1,0) [-800|800] "deg" Receiver\n', encoding='utf-8')
-    messages = can_database.load_dbc(path, channel='pt', period_ms=20)
+    messages = can_database.load_dbc(path, channel='veh', period_ms=20)
     assert [m.name for m in messages] == ['EXAMPLE_status']
     message = messages[0]
-    assert (message.identifier, message.channel, message.period_ms) == (291, 'pt', 20)
+    assert (message.identifier, message.channel, message.period_ms) == (291, 'veh', 20)
     frame = message.encode({'Speed': 55.5, 'Angle': -90.1})
     decoded = message.decode(frame)
     assert decoded['Speed'] == pytest.approx(55.5, abs=.1)

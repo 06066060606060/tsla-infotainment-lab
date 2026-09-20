@@ -310,7 +310,7 @@ def test_can_panel_reports_a_refusal_and_a_stopped_service(window):
 def test_can_panel_renders_a_decoded_trace(window):
     panel = window.can_panel
     panel.received('can', {'ok': True, 'now': 5, 'data': {'frames': [
-        {'channel': 'pt', 'id': 0x118, 'id_hex': '118', 'data': '21 04 00 00 00 00 00 00',
+        {'channel': 'veh', 'id': 0x118, 'id_hex': '118', 'data': '21 04 00 00 00 00 00 00',
          'name': 'LAB_driveState', 'signals': {'gear': 'D', 'speed_kph': 80.0}, 'timestamp': 4}],
         'now': 5}})
     assert 'LAB_driveState' in panel.frames.text()

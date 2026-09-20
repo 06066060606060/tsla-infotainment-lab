@@ -321,13 +321,27 @@ def can_service_state() -> Path:
     return path
 
 
-def can_start(backend_choice='auto', create=False, port=20200):
+def can_start(backend_choice='auto', create=False, port=20200, restart=False):
     """Start the CAN and gateway service as an ordinary user process."""
     import can_service
 
     state = can_service_state()
     if can_service.running(state):
-        return dict(can_service.request(state, {'action': 'status'}), already_running=True)
+        status = can_service.request(state, {'action': 'status'})
+        if status.get('revision') == can_service.SERVICE_REVISION and not restart:
+            return dict(status, already_running=True)
+        # A service started before an update keeps running its old code, so the
+        # panel would report stale behaviour. Replace it.
+        try:
+            can_service.request(state, {'action': 'stop'}, timeout=2)
+        except Exception:
+            pass
+        for _ in range(50):
+            if not can_service.running(state):
+                break
+            time.sleep(.1)
+        else:
+            raise RuntimeError('The previous CAN service did not stop. End that process, then start again.')
     log = (state / 'can-gateway.log').open('a')
     process = subprocess.Popen([sys.executable, str(PACKAGE / 'can_service.py'), '--state', str(state),
                                '--backend', backend_choice, '--bridge-port', str(int(port)),
@@ -363,7 +377,7 @@ def can_status():
     return can_service.request(state, {'action': 'status'})
 
 
-def can_setup(names=('vcan0', 'vcan1', 'vcan2', 'vcan3')):
+def can_setup(names=('vcan0', 'vcan1', 'vcan2')):
     """Create the virtual CAN interfaces once. This is the only privileged step."""
     from can_bus import create_vcan, vcan_supported
 

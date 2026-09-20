@@ -78,7 +78,7 @@ def allow(*identifiers: int, mask: int = 0x7FF) -> tuple[Filter, ...]:
 
 # Read paths are open; anything that reaches a vehicle channel is gated.
 DEFAULT_ROUTES: tuple[Route, ...] = (
-    Route("pt-to-eth", "pt", "eth", allow(0x118, 0x129),
+    Route("veh-drive-to-eth", "veh", "eth", allow(0x118, 0x129),
           description="Drive state and steering to the infotainment session."),
     Route("veh-to-eth", "veh", "eth", allow(0x102, 0x2E5, 0x3D8, 0x3F5),
           description="Closures, climate, tyres and lighting to the display."),
@@ -90,7 +90,7 @@ DEFAULT_ROUTES: tuple[Route, ...] = (
           description="Diagnostic requests on the isolated channel."),
     Route("party-to-eth", "party", "eth", allow(0x651),
           description="Diagnostic responses back to the requester."),
-    Route("veh-to-pt", "veh", "pt", allow(0x3F5),
+    Route("veh-to-ch", "veh", "ch", allow(0x3F5),
           description="Lighting state mirrored onto the powertrain channel."),
 )
 

@@ -88,7 +88,7 @@ An existing camera pipeline can publish **1280 × 720 RGB24** frames through an 
 
 ## CAN channels and the emulated gateway
 
-Open **CAN & gateway** to start the local CAN service. It offers four channels — vehicle, powertrain, charging and an isolated diagnostic channel — over SocketCAN `vcan` interfaces when the kernel provides them, and over a software hub when it does not.
+Open **CAN & gateway** to start the local CAN service. It offers the channels the vehicle names — VEH, CHASSIS and PARTY — over SocketCAN `vcan` interfaces when the kernel provides them, and over a software hub when it does not.
 
 An emulated gateway sits between those channels and the infotainment side. Reads are published freely; a write arriving from the infotainment side needs a route, an allowlisted identifier, a valid checksum and an unlocked session, and is rate limited. Accepted climate and lighting requests feed back into the vehicle services panel, so a frame that crosses the gateway changes the session exactly as the UI would.
 

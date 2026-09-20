@@ -29,7 +29,7 @@ CAN_RTR_FLAG = 0x40000000
 CAN_ERR_FLAG = 0x20000000
 CAN_SFF_MASK = 0x000007FF
 CAN_EFF_MASK = 0x1FFFFFFF
-DEFAULT_CHANNELS = ("veh", "pt", "ch", "party")
+DEFAULT_CHANNELS = ("veh", "ch", "party")
 
 
 def vcan_supported() -> bool:

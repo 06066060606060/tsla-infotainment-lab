@@ -86,11 +86,19 @@ def test_identifier_outside_the_route_filter_is_dropped(gateway):
     assert not decision.allowed and 'not in the route filter' in decision.reason
 
 
-def test_no_route_to_the_powertrain_channel_from_ethernet(gateway):
+def test_drive_state_cannot_be_written_from_ethernet(gateway):
+    """Drive state is published outward only: no inbound write reaches it."""
     unlock(gateway)
-    decision = gateway.from_ethernet(Frame(0x118, bytes(8), 'pt'))
+    decision = gateway.from_ethernet(Frame(0x118, bytes(8), 'veh'))
+    assert not decision.allowed and 'not in the route filter' in decision.reason
+    assert gateway.bus.channel('veh').transmitted == 0
+
+
+def test_no_route_to_the_chassis_channel_from_ethernet(gateway):
+    unlock(gateway)
+    decision = gateway.from_ethernet(Frame(0x352, bytes(8), 'ch'))
     assert not decision.allowed and 'no route' in decision.reason
-    assert gateway.bus.channel('pt').transmitted == 0
+    assert gateway.bus.channel('ch').transmitted == 0
 
 
 def test_invalid_checksum_is_refused_even_when_unlocked(gateway):
@@ -114,7 +122,7 @@ def test_bus_frames_are_published_towards_ethernet(gateway):
 
 def test_channel_mirror_forwards_lighting_to_the_powertrain_channel(gateway):
     gateway.bus.inject(can_database.message('LAB_lighting').encode({'indicator': 'Right'}))
-    assert any(f['id'] == 0x3F5 for f in gateway.bus.channel('pt').trace())
+    assert any(f['id'] == 0x3F5 for f in gateway.bus.channel('ch').trace())
 
 
 def test_unlisted_identifier_on_a_channel_is_not_published(gateway):
@@ -133,7 +141,7 @@ def test_rate_limit_rejects_a_flood(gateway):
 def test_status_reports_routes_and_counters(gateway):
     status = gateway.status()
     assert status['unlocked'] is False
-    assert {'eth-to-veh', 'pt-to-eth'} <= {route['name'] for route in status['routes']}
+    assert {'eth-to-veh', 'veh-drive-to-eth'} <= {route['name'] for route in status['routes']}
     assert set(status['counters']) == {'routed', 'blocked', 'unknown', 'rate_limited'}
 
 

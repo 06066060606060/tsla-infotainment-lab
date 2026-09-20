@@ -20,7 +20,7 @@ INDICATORS = ("Off", "Left", "Right", "Both")
 LIGHT_MODES = ("Off", "Parking", "On", "Auto")
 
 MESSAGES: tuple[Message, ...] = (
-    Message("LAB_driveState", 0x118, 8, "pt", period_ms=10, counter="counter", checksum="checksum",
+    Message("LAB_driveState", 0x118, 8, "veh", period_ms=10, counter="counter", checksum="checksum",
             signals=(
                 Signal("gear", 0, 3, choices=GEARS),
                 Signal("speed_kph", 8, 12, scale=.1, unit="km/h"),
@@ -29,7 +29,7 @@ MESSAGES: tuple[Message, ...] = (
                 Signal("counter", 48, 4),
                 Signal("checksum", 56, 8),
             )),
-    Message("LAB_steering", 0x129, 8, "pt", period_ms=10, counter="counter", checksum="checksum",
+    Message("LAB_steering", 0x129, 8, "veh", period_ms=10, counter="counter", checksum="checksum",
             signals=(
                 Signal("steering_deg", 0, 14, scale=.1, offset=-819.2, signed=False, unit="deg"),
                 Signal("road_wheel_deg", 16, 12, scale=.05, offset=-102.4, unit="deg"),

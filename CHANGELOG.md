@@ -2,7 +2,7 @@
 
 ## Unreleased — CAN channels and gateway emulation
 
-- **A local CAN service.** Four named channels over SocketCAN `vcan` interfaces, with a software hub fallback when the kernel module or privileges are missing. Frames are traced per channel and decoded against a frame table.
+- **A local CAN service.** The vehicle's own channel names — VEH, CHASSIS and PARTY — over SocketCAN `vcan` interfaces, with a software hub fallback when the kernel module or privileges are missing. Frames are traced per channel and decoded against a frame table.
 - **An emulated vehicle gateway.** Per-direction routes with identifier filters, writes from the infotainment side locked by default behind a local HMAC handshake, checksum validation and a rate limit. Accepted climate and lighting requests feed back into vehicle services.
 - **A CAN & gateway panel.** Start the service, watch the lock state and per-channel counters, unlock, send a frame through the gateway or straight onto a channel, and read recent frames with decoded signals.
 - **Frame definitions and a `.dbc` reader.** The built-in `LAB_*` layouts carry the existing simulator and vehicle-service state; your own database can replace them at runtime.
@@ -10,7 +10,7 @@
 
 ### 中文
 
-- **本地 CAN 服务。** 通过 SocketCAN `vcan` 提供四条通道；缺少内核模块或权限时自动改用软件总线。可按通道记录报文并解码。
+- **本地 CAN 服务。** 通过 SocketCAN `vcan` 提供 VEH、CHASSIS、PARTY 三条通道；缺少内核模块或权限时自动改用软件总线。可按通道记录报文并解码。
 - **模拟车辆网关。** 按方向配置路由与标识符过滤，车机侧写入默认锁定，需完成本地 HMAC 握手，并执行校验和与速率限制。被接受的空调与灯光请求会回写到车辆服务状态。
 - **新增 CAN 与网关面板。** 启动服务、查看锁定状态与各通道计数、解锁、经由网关或直接向通道发送报文，并查看最近报文的解码结果。
 - **报文定义与 `.dbc` 读取。** 内置 `LAB_*` 定义承载现有模拟与车辆服务状态，也可在运行时载入自有数据库。

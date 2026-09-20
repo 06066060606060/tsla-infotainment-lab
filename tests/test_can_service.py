@@ -104,7 +104,7 @@ def test_service_refuses_an_unknown_action(service):
 def test_service_state_updates_and_transmits(service):
     service.handle({'action': 'state', 'simulation': {'gear': 'D', 'speed_kph': 80}})
     service.step()
-    trace = service.handle({'action': 'trace', 'channel': 'pt', 'limit': 50})['frames']
+    trace = service.handle({'action': 'trace', 'channel': 'veh', 'limit': 50})['frames']
     drive = [item for item in trace if item['id'] == 0x118]
     assert drive and drive[-1]['signals']['speed_kph'] == pytest.approx(80, abs=.1)
     assert drive[-1]['name'] == 'LAB_driveState'
@@ -182,7 +182,7 @@ def test_service_follows_the_session_state_files(service, tmp_path):
     service.step()
     assert service.simulation.gear == 'D'
     assert service.services.battery_percent == 71
-    trace = service.handle({'action': 'trace', 'channel': 'pt'})['frames']
+    trace = service.handle({'action': 'trace', 'channel': 'veh'})['frames']
     assert [item for item in trace if item['id'] == 0x118][-1]['signals']['speed_kph'] == pytest.approx(97.5, abs=.1)
 
 
@@ -223,7 +223,7 @@ def test_injected_drive_frame_moves_the_controls_the_displays_read(service, tmp_
     frame = can_database.message('LAB_driveState').encode(
         {'gear': 'D', 'speed_kph': 64.3, 'throttle_pct': 18, 'brake_pressed': 0})
     service.handle({'action': 'send', 'origin': 'bus',
-                    'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
+                    'frame': {'channel': 'veh', 'id': '0x118', 'data': frame.data.hex()}})
     assert service.simulation.gear == 'D'
     assert service.simulation.speed_kph == pytest.approx(64.3, abs=.1)
     written = json_module.loads((tmp_path / 'controls.json').read_text())
@@ -235,7 +235,7 @@ def test_injected_drive_frame_moves_the_controls_the_displays_read(service, tmp_
 def test_injected_steering_and_indicator_reach_the_controls(service):
     steering = can_database.message('LAB_steering')
     service.handle({'action': 'send', 'origin': 'bus', 'frame': {
-        'channel': 'pt', 'id': '0x129',
+        'channel': 'veh', 'id': '0x129',
         'data': steering.encode(vehicle_can.steering_values(Simulation(steering_deg=-120))).data.hex()}})
     assert service.simulation.steering_deg == pytest.approx(-120, abs=.2)
     lighting = can_database.message('LAB_lighting')
@@ -247,7 +247,7 @@ def test_injected_steering_and_indicator_reach_the_controls(service):
 def test_an_impossible_drive_frame_is_counted_not_applied(service):
     frame = can_database.message('LAB_driveState').encode({'gear': 'Invalid', 'speed_kph': 40})
     service.handle({'action': 'send', 'origin': 'bus',
-                    'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
+                    'frame': {'channel': 'veh', 'id': '0x118', 'data': frame.data.hex()}})
     # Gear P forces a standstill, so the frame cannot claim 40 km/h in park.
     assert service.simulation.gear == 'P' and service.simulation.speed_kph == 0
 
@@ -256,7 +256,7 @@ def test_controls_write_back_is_skipped_when_not_following_the_session(service, 
     service.handle({'action': 'state', 'follow_session': False})
     frame = can_database.message('LAB_driveState').encode({'gear': 'N', 'speed_kph': 10})
     service.handle({'action': 'send', 'origin': 'bus',
-                    'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
+                    'frame': {'channel': 'veh', 'id': '0x118', 'data': frame.data.hex()}})
     assert service.simulation.gear == 'N'
     assert not (tmp_path / 'controls.json').exists()
 

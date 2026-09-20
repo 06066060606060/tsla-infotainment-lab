@@ -61,7 +61,7 @@ def handle(action, payload):
         return backend.can_call(payload)
     if action == 'can-start':
         return backend.can_start(payload.get('backend', 'auto'), bool(payload.get('create_interfaces')),
-                                 int(payload.get('port', 20200)))
+                                 int(payload.get('port', 20200)), bool(payload.get('restart')))
     if action == 'can-status':
         return backend.can_status()
     if action == 'focus':

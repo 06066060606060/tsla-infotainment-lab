@@ -34,8 +34,9 @@ those channels and the infotainment (Ethernet) side.
 | `vehicle_can.py` | Projects `Simulation` and `VehicleServices` onto periodic frames |
 | `can_service.py` | The loop: transport, gateway, periodic transmitter, control socket |
 
-Channels: `veh` (body), `pt` (powertrain), `ch` (charging), `party` (isolated
-diagnostic). With SocketCAN they map to `vcan0`…`vcan3`.
+Channels: `veh` (VEH, body and drive state), `ch` (CHASSIS, charging and
+energy), `party` (PARTY, the isolated diagnostic pair). With SocketCAN they map
+to `vcan0`, `vcan1` and `vcan2`.
 
 ## Routing
 
@@ -43,13 +44,12 @@ Read paths are open, and anything that ends on a vehicle channel is gated:
 
 | Route | Identifiers | Unlock required |
 | --- | --- | --- |
-| `pt` → Ethernet | `0x118`, `0x129` | no |
-| `veh` → Ethernet | `0x102`, `0x2E5`, `0x3D8`, `0x3F5` | no |
+| `veh` → Ethernet | `0x102`, `0x118`, `0x129`, `0x2E5`, `0x3D8`, `0x3F5` | no |
 | `ch` → Ethernet | `0x352` | no |
+| `party` → Ethernet | `0x651` | no |
 | Ethernet → `veh` | `0x2E5`, `0x3F5` | **yes** |
 | Ethernet → `party` | `0x641` | **yes** |
-| `party` → Ethernet | `0x651` | no |
-| `veh` → `pt` | `0x3F5` | no |
+| `veh` → `ch` mirror | `0x3F5` | no |
 
 A frame outside a route's filter is dropped and counted. A checksummed frame
 with a bad CRC is refused even when unlocked. More than 400 inbound frames per
@@ -94,7 +94,9 @@ injected frames are traced and dispatched in software rather than by enabling
 `CAN_RAW_RECV_OWN_MSGS`. The trace and the state feedback therefore behave
 identically on both transports.
 
-After pulling a change, restart both the desktop session and the CAN service:
+The service reports a revision, and starting it after an update replaces a
+process still running older code instead of silently reusing it. After pulling a
+change, restart both the desktop session and the CAN service:
 the service is a long-lived process and keeps running the code it started with.
 
 ## Running it

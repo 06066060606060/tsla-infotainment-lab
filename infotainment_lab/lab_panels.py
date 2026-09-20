@@ -340,8 +340,8 @@ class CanPanel(Panel):
     value, not a vehicle credential.
     """
 
-    CHANNELS = (('veh', 'Vehicle', '车身'), ('pt', 'Powertrain', '动力'),
-                ('ch', 'Charging', '充电'), ('party', 'Diagnostic', '诊断'))
+    CHANNELS = (('veh', 'VEH · vehicle', 'VEH · 车身'), ('ch', 'CHASSIS', 'CHASSIS · 底盘'),
+                ('party', 'PARTY · diagnostic', 'PARTY · 诊断'))
 
     def __init__(self, window):
         super().__init__(window)
@@ -470,8 +470,12 @@ class CanPanel(Panel):
         gateway = data.get('gateway', {})
         counters = gateway.get('counters', {})
         channels = ', '.join(f"{item['channel']}:{item['received']}" for item in gateway.get('channels', []))
-        source = (self.tr2('following the session', '跟随会话状态') if data.get('follow_session')
-                  else self.tr2('panel state only', '仅面板状态'))
+        if 'follow_session' not in data:
+            source = self.tr2('older service running · restart it', '服务版本较旧 · 请重启')
+        elif data.get('follow_session'):
+            source = self.tr2('following the session', '跟随会话状态')
+        else:
+            source = self.tr2('panel state only', '仅面板状态')
         self.state.setText(' · '.join(filter(None, (
             self.tr2('Transport: ', '传输：') + str(gateway.get('backend')),
             source,
