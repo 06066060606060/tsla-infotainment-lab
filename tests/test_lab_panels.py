@@ -266,3 +266,53 @@ def test_stale_replay_poll_does_not_replace_a_manual_edit_while_it_is_debounced(
     assert window.sliders['steering_deg'].value() == 90
     window.send_controls()
     assert payloads(window, 'controls')[-1]['steering_deg'] == 90
+
+
+def test_can_panel_sends_a_frame_through_the_gateway(window):
+    panel = window.can_panel
+    panel.identifier.setText('0x2E5')
+    panel.payload.setText('21 04')
+    panel.send_frame()
+    payload = payloads(window, 'can')[-1]
+    assert payload['action'] == 'send' and payload['origin'] == 'ethernet'
+    assert payload['frame'] == {'channel': 'veh', 'id': '0x2E5', 'data': '21 04'}
+
+
+def test_can_panel_requires_an_identifier(window):
+    window.can_panel.send_frame()
+    assert payloads(window, 'can') == []
+
+
+def test_can_panel_answers_a_challenge_with_a_derived_response(window):
+    import hashlib
+    import hmac
+
+    panel = window.can_panel
+    panel.secret.setText('test-secret')
+    panel.unlock()
+    assert payloads(window, 'can')[-1] == {'action': 'challenge'}
+    panel.received('can', {'ok': True, 'data': {'challenge': '00112233445566aa'}})
+    sent = payloads(window, 'can')[-1]
+    assert sent['action'] == 'unlock'
+    assert sent['response'] == hmac.new(b'test-secret', bytes.fromhex('00112233445566aa'),
+                                        hashlib.sha256).hexdigest()[:32]
+
+
+def test_can_panel_reports_a_refusal_and_a_stopped_service(window):
+    panel = window.can_panel
+    panel.received('can', {'ok': True, 'data': {'allowed': False, 'route': 'eth-to-veh',
+                                                'reason': 'the gateway session is locked'}})
+    assert 'locked' in panel.result.text()
+    panel.received('can-status', {'ok': True, 'data': {'service': 'stopped'}})
+    assert 'stopped' in panel.state.text() or '未运行' in panel.state.text()
+
+
+def test_can_panel_renders_a_decoded_trace(window):
+    panel = window.can_panel
+    panel.received('can', {'ok': True, 'now': 5, 'data': {'frames': [
+        {'channel': 'veh', 'id': 0x118, 'id_hex': '118', 'data': '21 04 00 00 00 00 00 00',
+         'name': 'LAB_driveState', 'signals': {'gear': 'D', 'speed_kph': 80.0}, 'timestamp': 4}],
+        'now': 5}})
+    assert 'LAB_driveState' in panel.frames.text()
+    assert 'gear=D' in panel.trace.text()
+    assert panel.since == 5

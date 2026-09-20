@@ -298,10 +298,95 @@ def vehicle_services_state():
     return VehicleServices.parse(feedback.get('state') or load_json(path, {})).as_dict()
 
 
+def publish_can_state(**state):
+    """Keep the CAN service's view in step with the desktop. Never fatal."""
+    try:
+        import can_service
+        if can_service.running(can_service_state()):
+            can_service.request(can_service_state(), {'action': 'state', **state}, timeout=1)
+    except Exception:
+        pass
+
+
 def set_vehicle_services(payload):
     result = VehicleServices.parse(vehicle_services_state()).patched(payload).as_dict()
     atomic_json(DATA / 'session/vehicle-services.json', result)
+    publish_can_state(vehicle_services=result)
     return result
+
+
+def can_service_state() -> Path:
+    path = DATA / 'session'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def can_start(backend_choice='auto', create=False, port=20200, restart=False):
+    """Start the CAN and gateway service as an ordinary user process."""
+    import can_service
+
+    state = can_service_state()
+    if can_service.running(state):
+        status = can_service.request(state, {'action': 'status'})
+        if status.get('revision') == can_service.SERVICE_REVISION and not restart:
+            return dict(status, already_running=True)
+        # A service started before an update keeps running its old code, so the
+        # panel would report stale behaviour. Replace it.
+        try:
+            can_service.request(state, {'action': 'stop'}, timeout=2)
+        except Exception:
+            pass
+        for _ in range(50):
+            if not can_service.running(state):
+                break
+            time.sleep(.1)
+        else:
+            raise RuntimeError('The previous CAN service did not stop. End that process, then start again.')
+    log = (state / 'can-gateway.log').open('a')
+    process = subprocess.Popen([sys.executable, str(PACKAGE / 'can_service.py'), '--state', str(state),
+                               '--backend', backend_choice, '--bridge-port', str(int(port)),
+                               *(['--create-interfaces'] if create else [])],
+                              stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                              cwd=str(PACKAGE))
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError('The CAN gateway service exited during startup. Open Diagnostics for its log.')
+        if can_service.running(state):
+            return dict(can_service.request(state, {'action': 'status'}), pid=process.pid)
+        time.sleep(.2)
+    process.terminate()
+    raise RuntimeError('The CAN gateway service did not become ready in time.')
+
+
+def can_call(payload):
+    import can_service
+
+    if not isinstance(payload, dict):
+        raise ValueError('CAN requests must be an object.')
+    return can_service.request(can_service_state(), payload)
+
+
+def can_status():
+    import can_service
+
+    state = can_service_state()
+    if not can_service.running(state):
+        from can_bus import backend_report
+        return {'service': 'stopped', 'environment': backend_report()}
+    return can_service.request(state, {'action': 'status'})
+
+
+def can_setup(names=('vcan0', 'vcan1', 'vcan2')):
+    """Create the virtual CAN interfaces once. This is the only privileged step."""
+    from can_bus import create_vcan, vcan_supported
+
+    if os.geteuid() != 0:
+        raise RuntimeError('Creating virtual CAN interfaces needs an administrator. The service itself runs without root.')
+    if not vcan_supported():
+        raise RuntimeError('This kernel does not expose SocketCAN. The software CAN hub needs no setup.')
+    run(['modprobe', 'vcan'], check=False)
+    return {'interfaces': [create_vcan(name) for name in names]}
 
 
 def open_browser(mode, url=None):
@@ -445,8 +530,11 @@ def setup(uid: int):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser", "steering", "qemu-check", "qemu-start", "qemu-status", "qemu-stop"))
+    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser", "steering", "can", "can-start", "can-status", "can-setup", "qemu-check", "qemu-start", "qemu-status", "qemu-stop"))
     parser.add_argument('--button')
+    parser.add_argument('--can-backend', choices=('auto', 'socketcan', 'software'), default='auto')
+    parser.add_argument('--bridge-port', type=int, default=20200)
+    parser.add_argument('--create-interfaces', action='store_true')
     parser.add_argument('--engine', choices=('native', 'qemu'), default='native')
     parser.add_argument('--vm-directory')
     parser.add_argument('--source', choices=('pattern', 'video', 'raw', 'off', 'replay'), default='pattern')
@@ -499,11 +587,17 @@ def main():
         elif args.action == 'vehicle-services': result = set_vehicle_services(json.loads(args.payload))
         elif args.action == 'browser': result = open_browser(args.mode, args.url)
         elif args.action == 'steering': result = steering_button(args.button)
+        elif args.action == 'can': result = can_call(json.loads(args.payload))
+        elif args.action == 'can-start':
+            result = can_start(args.can_backend, args.create_interfaces, args.bridge_port)
+        elif args.action == 'can-status': result = can_status()
+        elif args.action == 'can-setup': result = can_setup()
         elif args.action in ('preview', 'capture'): result = capture_displays(args.action == 'preview')
         elif args.action == 'focus': result = focus_display(args.display)
         elif args.action == "report": result = public_report(status(), probe())
         elif args.action == "controls":
             result = Simulation.parse(json.loads(args.payload)).as_dict()
+            publish_can_state(simulation=result)
             result = manual_takeover(DATA / 'session', result)
         else:
             result = {"logs": {p.name: p.read_text(errors="replace")[-12000:] for p in (DATA / "session").glob("*.log") if p.stat().st_size < 100_000_000}}

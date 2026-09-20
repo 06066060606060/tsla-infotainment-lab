@@ -86,6 +86,16 @@ To try a sample recording, run `python3 scripts/make-replay-demo.py` and open `b
 
 An existing camera pipeline can publish **1280 × 720 RGB24** frames through an atomically replaced file, such as `/tmp/tesla-sim/v4l2-back.rgb`. Enter that path in the panel. See [camera and replay formats](docs/replay.md) for the details.
 
+## CAN channels and the emulated gateway
+
+Open **CAN & gateway** to start the local CAN service. It offers the channels the vehicle names — VEH, CHASSIS and PARTY — over SocketCAN `vcan` interfaces when the kernel provides them, and over a software hub when it does not.
+
+An emulated gateway sits between those channels and the infotainment side. Reads are published freely; a write arriving from the infotainment side needs a route, an allowlisted identifier, a valid checksum and an unlocked session, and is rate limited. Accepted climate and lighting requests feed back into the vehicle services panel, so a frame that crosses the gateway changes the session exactly as the UI would.
+
+The panel sends a frame either through the gateway or straight onto a channel, and lists recent traffic with decoded signals. `candump` and `cansend` see the same frames when SocketCAN is selected.
+
+The gateway is a behavioural model: separate channels, per-direction filters, locked by default. It contains no vendor protocol, key or authentication scheme, and the frame definitions are this project's own `LAB_*` layouts — load your own `.dbc` for anything else. See the [CAN and gateway guide](docs/can-gateway.md).
+
 ## Development
 
 This is an independent compatibility and cybersecurity engineering project. It brings together native graphics, input routing, process management, and local simulation while keeping the supplied firmware unchanged.
