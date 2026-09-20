@@ -70,9 +70,15 @@ panel alone.
 
 The displays themselves are never driven by CAN. They read the session's own
 value interfaces, exactly as before this subsystem existed; the frames are a
-projection of that state. The one path back is an accepted inbound
-`LAB_climate` or `LAB_lighting` request, which is written to the vehicle
-services file and therefore reaches both screens.
+projection of that state. The paths back are the accepted inbound frames. `LAB_climate` and
+`LAB_lighting` are written to the vehicle services file; `LAB_driveState`,
+`LAB_steering` and the indicator field of `LAB_lighting` are written to the
+controls file and release replay ownership, the same as moving a control by
+hand. So an injected drive frame moves gear, speed and steering on both
+screens. A frame carries physical quantities rather than UI intent, so a brake
+flag only clears or leaves the pedal; it cannot restore a pedal percentage. A
+request whose content is not a possible vehicle state — 40 km/h while in park —
+is counted as blocked and not applied.
 
 ## Running it
 

@@ -214,3 +214,47 @@ def test_an_accepted_request_is_written_back_for_the_displays(service, tmp_path)
     assert written['exterior_light_mode'] == 'Parking'
     service.step()  # the write-back must not be read as an external change
     assert service.services.exterior_light_mode == 'Parking'
+
+
+def test_injected_drive_frame_moves_the_controls_the_displays_read(service, tmp_path):
+    import json as json_module
+
+    frame = can_database.message('LAB_driveState').encode(
+        {'gear': 'D', 'speed_kph': 64.3, 'throttle_pct': 18, 'brake_pressed': 0})
+    service.handle({'action': 'send', 'origin': 'bus',
+                    'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
+    assert service.simulation.gear == 'D'
+    assert service.simulation.speed_kph == pytest.approx(64.3, abs=.1)
+    written = json_module.loads((tmp_path / 'controls.json').read_text())
+    assert written['gear'] == 'D' and written['speed_kph'] == pytest.approx(64.3, abs=.1)
+    # Replay ownership is released, exactly as a manual control does.
+    assert json_module.loads((tmp_path / 'replay-request.json').read_text())['action'] == 'manual'
+
+
+def test_injected_steering_and_indicator_reach_the_controls(service):
+    steering = can_database.message('LAB_steering')
+    service.handle({'action': 'send', 'origin': 'bus', 'frame': {
+        'channel': 'pt', 'id': '0x129',
+        'data': steering.encode(vehicle_can.steering_values(Simulation(steering_deg=-120))).data.hex()}})
+    assert service.simulation.steering_deg == pytest.approx(-120, abs=.2)
+    lighting = can_database.message('LAB_lighting')
+    service.handle({'action': 'send', 'origin': 'bus', 'frame': {
+        'channel': 'veh', 'id': '0x3F5', 'data': lighting.encode({'indicator': 'Both'}).data.hex()}})
+    assert service.simulation.indicator == 'hazard'
+
+
+def test_an_impossible_drive_frame_is_counted_not_applied(service):
+    frame = can_database.message('LAB_driveState').encode({'gear': 'Invalid', 'speed_kph': 40})
+    service.handle({'action': 'send', 'origin': 'bus',
+                    'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
+    # Gear P forces a standstill, so the frame cannot claim 40 km/h in park.
+    assert service.simulation.gear == 'P' and service.simulation.speed_kph == 0
+
+
+def test_controls_write_back_is_skipped_when_not_following_the_session(service, tmp_path):
+    service.handle({'action': 'state', 'follow_session': False})
+    frame = can_database.message('LAB_driveState').encode({'gear': 'N', 'speed_kph': 10})
+    service.handle({'action': 'send', 'origin': 'bus',
+                    'frame': {'channel': 'pt', 'id': '0x118', 'data': frame.data.hex()}})
+    assert service.simulation.gear == 'N'
+    assert not (tmp_path / 'controls.json').exists()

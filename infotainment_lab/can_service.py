@@ -21,8 +21,10 @@ from core import atomic_json
 from can_bus import backend_report, open_bus
 from can_frames import Frame
 from gateway import DEFAULT_ENDPOINT, EthernetBridge, SecurityGateway
+from replay import manual_takeover
 from simulation import Simulation
-from vehicle_can import INBOUND, PeriodicTransmitter, snapshot, state_patch
+from vehicle_can import (INBOUND, PeriodicTransmitter, controls_patch, snapshot,
+                         state_patch)
 from vehicle_services import VehicleServices
 
 SOCKET_NAME = "can-gateway.sock"
@@ -62,7 +64,9 @@ class GatewayService:
         definition = can_database.lookup(frame.channel, frame.identifier, self.gateway.table)
         if not definition or definition.name not in INBOUND:
             return
-        patch = state_patch(definition.name, definition.decode(frame))
+        decoded = definition.decode(frame)
+        self._apply_controls(definition.name, decoded)
+        patch = state_patch(definition.name, decoded)
         if not patch:
             return
         try:
@@ -104,6 +108,32 @@ class GatewayService:
                         self.services = VehicleServices.parse(value)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue  # A half-written or unrelated file must not stop the bus.
+
+    def _apply_controls(self, name: str, decoded: dict) -> None:
+        """Move the driving inputs the displays read, taking over from replay."""
+        patch = controls_patch(name, decoded)
+        if not patch:
+            return
+        try:
+            with self.lock:
+                updated = Simulation.parse(self.simulation.as_dict() | patch)
+                if updated == self.simulation:
+                    return
+                self.simulation = updated
+                self.applied.append({"frame": name, "controls": patch, "at": time.time()})
+                del self.applied[:-50]
+                if not self.follow_session:
+                    return
+                # controls.json is what the displays read. Release replay
+                # ownership the same way a manual control does.
+                manual_takeover(self.state, updated.as_dict())
+                path = self.state / "controls.json"
+                try:
+                    self.sources["controls.json"] = path.stat().st_mtime_ns
+                except OSError:
+                    pass
+        except (ValueError, OSError):
+            self.gateway.counts["blocked"] += 1
 
     # -- control ----------------------------------------------------------
     def handle(self, request: dict) -> dict:

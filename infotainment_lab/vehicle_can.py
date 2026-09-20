@@ -16,8 +16,11 @@ from can_frames import Frame
 from simulation import STEERING_RATIO, WHEELBASE_M, Simulation
 from vehicle_services import VehicleServices
 
-# Frames whose content the gateway is allowed to feed back into local state.
-INBOUND = {"LAB_climate", "LAB_lighting"}
+# Frames whose content is allowed to feed back into local state, and which
+# part of the desktop state each one owns.
+INBOUND_SERVICES = {"LAB_climate", "LAB_lighting"}
+INBOUND_CONTROLS = {"LAB_driveState", "LAB_steering", "LAB_lighting"}
+INBOUND = INBOUND_SERVICES | INBOUND_CONTROLS
 
 
 def drive_values(sim: Simulation) -> dict:
@@ -76,7 +79,7 @@ def frame_values(sim: Simulation, services: VehicleServices, elapsed: float = 0)
 
 def state_patch(name: str, decoded: dict) -> dict:
     """Translate an accepted inbound frame into a VehicleServices patch."""
-    if name not in INBOUND:
+    if name not in INBOUND_SERVICES:
         return {}
     if name == "LAB_climate":
         return {"climate_on": bool(decoded["climate_on"]), "ac_on": bool(decoded["ac_on"]),
@@ -85,6 +88,27 @@ def state_patch(name: str, decoded: dict) -> dict:
                 "passenger_temp_c": round(decoded["passenger_temp_c"], 1)}
     return {"exterior_light_mode": decoded["light_mode"] if decoded["light_mode"] in ("Off", "Parking", "On", "Auto") else "Off",
             "high_beams": bool(decoded["high_beams"]), "ambient_dark": bool(decoded["ambient_dark"])}
+
+
+def controls_patch(name: str, decoded: dict) -> dict:
+    """Translate an accepted inbound frame into a Simulation patch.
+
+    A frame carries physical quantities, so the pedal percentage cannot be
+    recovered from a brake flag: only the pressed state is applied.
+    """
+    if name == "LAB_driveState":
+        patch = {"gear": decoded["gear"] if decoded["gear"] in ("P", "R", "N", "D") else "P",
+                 "speed_kph": round(decoded["speed_kph"], 1),
+                 "throttle_pct": round(decoded["throttle_pct"], 1)}
+        if not decoded["brake_pressed"]:
+            patch["brake_pct"] = 0
+        return patch
+    if name == "LAB_steering":
+        return {"steering_deg": round(decoded["steering_deg"], 1)}
+    if name == "LAB_lighting":
+        direction = {"Off": "off", "Left": "left", "Right": "right", "Both": "hazard"}
+        return {"indicator": direction.get(decoded["indicator"], "off")}
+    return {}
 
 
 @dataclass
