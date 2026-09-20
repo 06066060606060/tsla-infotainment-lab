@@ -330,3 +330,161 @@ class ServicesPanel(Panel):
             self.feedback.setText(self.tr2('Center ↔ Instruments', '中控 ↔ 仪表') + '  ·  ' + str(link.get('synchronized_count', 0)) + self.tr2(' shared fields synchronized', ' 项数据已同步'))
         else:
             self.feedback.setText(self.tr2('Waiting for both displays to synchronize.', '等待两块屏幕完成同步。') if live else self.tr2('Start a device to use vehicle services.', '启动设备后即可使用车辆服务。'))
+
+
+class CanPanel(Panel):
+    """Read and write frames through the emulated gateway.
+
+    The gateway starts locked: write requests from this panel are refused until
+    the lab unlock handshake succeeds. The secret below is this lab's own shared
+    value, not a vehicle credential.
+    """
+
+    CHANNELS = (('veh', 'Vehicle', '车身'), ('pt', 'Powertrain', '动力'),
+                ('ch', 'Charging', '充电'), ('party', 'Diagnostic', '诊断'))
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.since = 0
+        self.awaiting_unlock = False
+        self.text('CAN bus and gateway', 'CAN 总线与网关', 'subtitle')
+        self.text('An emulated gateway routes frames between the local channels and the infotainment Ethernet side. '
+                  'Definitions and identifiers are this lab’s own; a decoded value is not evidence about a vehicle.',
+                  '模拟网关在本地各通道与车机以太网侧之间转发报文。报文定义与标识符均由本项目自行编写，解码结果不代表真实车辆行为。')
+        row = QHBoxLayout()
+        self.backend_box = QComboBox()
+        for key, en, zh in (('auto', 'Automatic transport', '自动选择传输'),
+                            ('socketcan', 'SocketCAN (vcan)', 'SocketCAN (vcan)'),
+                            ('software', 'Software hub', '软件总线')):
+            self.backend_box.addItem(self.tr2(en, zh), key)
+        self.backend_box.setAccessibleName(self.tr2('CAN transport', 'CAN 传输方式'))
+        row.addWidget(self.backend_box)
+        row.addWidget(window.button('Start service', '启动服务', self.start_service))
+        row.addWidget(window.button('Refresh', '刷新', self.refresh))
+        self.layout.addLayout(row)
+
+        unlock_row = QHBoxLayout()
+        self.secret = QLineEdit('infotainment-lab')
+        self.secret.setAccessibleName(self.tr2('Gateway lab secret', '网关实验密钥'))
+        self.secret.setPlaceholderText(self.tr2('Gateway lab secret', '网关实验密钥'))
+        unlock_row.addWidget(self.secret, 1)
+        unlock_row.addWidget(window.button('Unlock gateway', '解锁网关', self.unlock))
+        unlock_row.addWidget(window.button('Lock', '锁定', lambda: self.request({'action': 'lock'})))
+        self.layout.addLayout(unlock_row)
+        self.state = self.text('Start the service to see the channels.', '启动服务后显示通道状态。', 'notice')
+
+        send_row = QHBoxLayout()
+        self.channel = QComboBox()
+        for key, en, zh in self.CHANNELS:
+            self.channel.addItem(self.tr2(en, zh), key)
+        self.channel.setAccessibleName(self.tr2('Channel', '通道'))
+        send_row.addWidget(self.channel)
+        self.identifier = QLineEdit()
+        self.identifier.setPlaceholderText(self.tr2('Identifier, for example 0x2E5', '标识符，例如 0x2E5'))
+        self.identifier.setAccessibleName(self.tr2('Frame identifier', '报文标识符'))
+        send_row.addWidget(self.identifier)
+        self.payload = QLineEdit()
+        self.payload.setPlaceholderText(self.tr2('Payload bytes, for example 21 04 00', '数据字节，例如 21 04 00'))
+        self.payload.setAccessibleName(self.tr2('Frame payload', '报文数据'))
+        send_row.addWidget(self.payload, 1)
+        self.origin = QComboBox()
+        for key, en, zh in (('ethernet', 'Through the gateway', '经由网关'), ('bus', 'Inject on the channel', '直接注入通道')):
+            self.origin.addItem(self.tr2(en, zh), key)
+        self.origin.setAccessibleName(self.tr2('Write path', '写入路径'))
+        send_row.addWidget(self.origin)
+        send_row.addWidget(window.button('Send frame', '发送报文', self.send_frame))
+        self.layout.addLayout(send_row)
+        self.result = self.text('', '', 'notice')
+
+        self.trace = QLineEdit()
+        self.trace.setReadOnly(True)
+        self.trace.setAccessibleName(self.tr2('Last decoded frame', '最近解码报文'))
+        self.layout.addWidget(self.trace)
+        self.frames = QLabel('')
+        self.frames.setObjectName('muted')
+        self.frames.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.frames.setWordWrap(False)
+        self.layout.addWidget(self.frames)
+        self.layout.addStretch()
+
+    # -- requests ---------------------------------------------------------
+    def request(self, payload):
+        return self.window.bridge.call('can', '--payload', json.dumps(payload))
+
+    def start_service(self):
+        self.window.bridge.call('can-start', '--can-backend', self.backend_box.currentData())
+
+    def refresh(self):
+        self.window.bridge.call('can-status')
+        self.request({'action': 'trace', 'limit': 40, 'since': self.since})
+
+    def unlock(self):
+        self.awaiting_unlock = True
+        self.request({'action': 'challenge'})
+
+    def send_frame(self):
+        identifier = self.identifier.text().strip()
+        if not identifier:
+            self.result.setText(self.tr2('Enter an identifier first.', '请先填写标识符。'))
+            return
+        self.request({'action': 'send', 'origin': self.origin.currentData(),
+                      'frame': {'channel': self.channel.currentData(), 'id': identifier,
+                                'data': self.payload.text().strip()}})
+
+    # -- responses --------------------------------------------------------
+    def received(self, action, result):
+        if action not in ('can', 'can-start', 'can-status'):
+            return
+        if not result.get('ok'):
+            self.awaiting_unlock = False
+            self.result.setText(result.get('error', ''))
+            return
+        data = result.get('data', {})
+        if self.awaiting_unlock and 'challenge' in data:
+            import hashlib
+            import hmac
+            self.awaiting_unlock = False
+            response = hmac.new(self.secret.text().encode(), bytes.fromhex(data['challenge']),
+                                hashlib.sha256).hexdigest()[:32]
+            self.request({'action': 'unlock', 'response': response})
+            return
+        if 'frames' in data:
+            self.render_frames(data['frames'])
+            self.since = data.get('now', self.since)
+            return
+        if 'allowed' in data:
+            reason = data.get('reason') or ''
+            self.result.setText(self.tr2('Routed through ', '已通过 ') + str(data.get('route'))
+                                if data['allowed'] else self.tr2('Refused: ', '已拒绝：') + reason)
+            return
+        if 'unlocked' in data and 'gateway' not in data:
+            self.result.setText(self.tr2('Gateway unlocked for this session.', '网关已在本次会话中解锁。')
+                                if data['unlocked'] else self.tr2('Gateway locked.', '网关已锁定。'))
+            return
+        self.render_status(data)
+
+    def render_status(self, data):
+        if data.get('service') != 'running':
+            self.state.setText(self.tr2('The CAN service is stopped.', 'CAN 服务未运行。'))
+            return
+        gateway = data.get('gateway', {})
+        counters = gateway.get('counters', {})
+        channels = ', '.join(f"{item['channel']}:{item['received']}" for item in gateway.get('channels', []))
+        self.state.setText(' · '.join(filter(None, (
+            self.tr2('Transport: ', '传输：') + str(gateway.get('backend')),
+            self.tr2('Unlocked', '已解锁') if gateway.get('unlocked') else self.tr2('Locked', '已锁定'),
+            channels,
+            self.tr2('routed ', '已转发 ') + str(counters.get('routed', 0)),
+            self.tr2('blocked ', '已拦截 ') + str(counters.get('blocked', 0) + counters.get('unknown', 0))))))
+
+    def render_frames(self, frames):
+        if not frames:
+            return
+        lines = []
+        for item in frames[-16:]:
+            signals = item.get('signals') or {}
+            summary = ' '.join(f'{name}={value}' for name, value in list(signals.items())[:4])
+            lines.append(f"{item['channel']:<5} {item['id_hex']:>4}  {item['data']:<24} "
+                         f"{item.get('name', '')} {summary}")
+        self.frames.setText('\n'.join(lines))
+        self.trace.setText(lines[-1].strip())

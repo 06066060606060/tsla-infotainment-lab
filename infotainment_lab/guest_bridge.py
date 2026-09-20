@@ -10,7 +10,8 @@ import backend
 from guest_status import session_status
 
 ACTIONS = frozenset(('status', 'controls', 'preview', 'capture', 'camera-preview',
-                     'camera', 'replay', 'vehicle-services', 'browser', 'steering', 'logs', 'focus'))
+                     'camera', 'replay', 'vehicle-services', 'browser', 'steering', 'logs', 'focus',
+                     'can', 'can-start', 'can-status'))
 
 
 def configure():
@@ -56,6 +57,13 @@ def handle(action, payload):
         return backend.open_browser(payload.get('mode', 'browser'), payload.get('url'))
     if action == 'steering':
         return backend.steering_button(payload['button'])
+    if action == 'can':
+        return backend.can_call(payload)
+    if action == 'can-start':
+        return backend.can_start(payload.get('backend', 'auto'), bool(payload.get('create_interfaces')),
+                                 int(payload.get('port', 20200)))
+    if action == 'can-status':
+        return backend.can_status()
     if action == 'focus':
         return backend.focus_display(payload.get('display', 'center'))
     logs = {}

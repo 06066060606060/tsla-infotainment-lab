@@ -25,7 +25,7 @@ from .presentation import icon, readiness
 from .workspace import build_workspace
 from .simulation import Simulation
 from .desktop_instance import DesktopInstance
-from .lab_panels import BrowserPanel, ReplayPanel, ServicesPanel
+from .lab_panels import BrowserPanel, CanPanel, ReplayPanel, ServicesPanel
 from .steering import ACTIONS as STEERING_ACTIONS
 from .hold_button import HoldButton
 
@@ -165,7 +165,7 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
         for index, en, zh, symbol in ((0, 'Devices', '设备', 'devices'), (1, 'Controls', '车辆控制', 'controls'),
                                        (2, 'Camera & replay', '摄像头与回放', 'camera'), (5, 'Browsers', '浏览器', 'screen'),
-                                       (6, 'Vehicle services', '车辆服务', 'settings'), (3, 'Diagnostics', '诊断', 'settings'), (4, 'About', '关于项目', 'help')):
+                                       (6, 'Vehicle services', '车辆服务', 'settings'), (7, 'CAN & gateway', 'CAN 与网关', 'controls'), (3, 'Diagnostics', '诊断', 'settings'), (4, 'About', '关于项目', 'help')):
             nav = QToolButton()
             nav.setText(self.tr2(en, zh).replace('&', '&&'))
             nav.setProperty('full_text', self.tr2(en, zh))
@@ -243,9 +243,10 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.browser_panel = BrowserPanel(self)
         self.services_panel = ServicesPanel(self)
+        self.can_panel = CanPanel(self)
         if browser_draft: self.browser_panel.restore_draft(browser_draft)
         if services_draft: self.services_panel.restore_draft(services_draft)
-        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.services_panel):
+        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.services_panel, self.can_panel):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -498,7 +499,8 @@ class MainWindow(QMainWindow):
         self.current_page = index
         self.pages.setCurrentIndex(index)
         titles = (("Device manager", "设备管理"), ("Vehicle controls", "车辆控制"), ("Camera & replay", "摄像头与回放"),
-                  ("Diagnostics", "诊断"), ("About this lab", "关于项目"), ('Browser workspace', '浏览器工作区'), ('Vehicle services', '车辆服务'))
+                  ("Diagnostics", "诊断"), ("About this lab", "关于项目"), ('Browser workspace', '浏览器工作区'), ('Vehicle services', '车辆服务'),
+                  ('CAN & gateway', 'CAN 与网关'))
         self.page_title.setText(self.tr2(*titles[index]))
         self.nav_group.button(index).setChecked(True)
         self.refresh_icons()
@@ -672,6 +674,9 @@ class MainWindow(QMainWindow):
         self.bridge.call('steering', '--button', action)
 
     def received(self, action, result):
+        if action in ('can', 'can-start', 'can-status'):
+            self.can_panel.received(action, result)
+            return
         if action == 'vehicle-services': self.services_panel.acknowledge(bool(result.get('ok')))
         if action in ('start', 'stop', 'restart', 'import', 'setup', 'qemu-check'):
             self.busy, self.active_action = False, None
