@@ -59,6 +59,21 @@ An accepted inbound `LAB_climate` or `LAB_lighting` frame is turned back into a
 `VehicleServices` patch, so a write that crosses the gateway shows up in the
 desktop session exactly as a UI change would.
 
+## Where the state comes from
+
+The desktop session owns the state the displays receive: `session/controls.json`
+for driving inputs and `session/vehicle-services.json` for everything else. The
+service follows both files, so a trace matches what is on screen, including
+while a recorded drive is playing. Turn that off with
+`{"action": "state", "follow_session": false}` to drive the frames from the
+panel alone.
+
+The displays themselves are never driven by CAN. They read the session's own
+value interfaces, exactly as before this subsystem existed; the frames are a
+projection of that state. The one path back is an accepted inbound
+`LAB_climate` or `LAB_lighting` request, which is written to the vehicle
+services file and therefore reaches both screens.
+
 ## Running it
 
 One privileged step, only if you want real SocketCAN interfaces:

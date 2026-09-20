@@ -470,8 +470,11 @@ class CanPanel(Panel):
         gateway = data.get('gateway', {})
         counters = gateway.get('counters', {})
         channels = ', '.join(f"{item['channel']}:{item['received']}" for item in gateway.get('channels', []))
+        source = (self.tr2('following the session', '跟随会话状态') if data.get('follow_session')
+                  else self.tr2('panel state only', '仅面板状态'))
         self.state.setText(' · '.join(filter(None, (
             self.tr2('Transport: ', '传输：') + str(gateway.get('backend')),
+            source,
             self.tr2('Unlocked', '已解锁') if gateway.get('unlocked') else self.tr2('Locked', '已锁定'),
             channels,
             self.tr2('routed ', '已转发 ') + str(counters.get('routed', 0)),

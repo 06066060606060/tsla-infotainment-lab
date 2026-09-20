@@ -17,6 +17,7 @@ import threading
 import time
 
 import can_database
+from core import atomic_json
 from can_bus import backend_report, open_bus
 from can_frames import Frame
 from gateway import DEFAULT_ENDPOINT, EthernetBridge, SecurityGateway
@@ -48,6 +49,10 @@ class GatewayService:
         self.transmit = True
         self.running = True
         self.applied: list[dict] = []
+        # The desktop session owns the state the displays receive. Follow its
+        # files so a trace always matches the screen, including during replay.
+        self.sources = {'controls.json': 0, 'vehicle-services.json': 0}
+        self.follow_session = True
         self.lock = threading.Lock()
         self.bus.subscribe(self._feedback)
 
@@ -65,8 +70,40 @@ class GatewayService:
                 self.services = self.services.patched(patch)
                 self.applied.append({"frame": definition.name, "patch": patch, "at": time.time()})
                 del self.applied[:-50]
+                # Close the loop: the session file is what the displays read, so
+                # an accepted request reaches the screen like a panel change.
+                if self.follow_session:
+                    path = self.state / 'vehicle-services.json'
+                    atomic_json(path, self.services.as_dict())
+                    try:
+                        self.sources['vehicle-services.json'] = path.stat().st_mtime_ns
+                    except OSError:
+                        pass
         except ValueError:
             self.gateway.counts["blocked"] += 1
+
+    def refresh_from_session(self) -> None:
+        """Adopt the session's own state whenever one of its files changes."""
+        if not self.follow_session:
+            return
+        for name in tuple(self.sources):
+            path = self.state / name
+            try:
+                stamp = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            if stamp == self.sources[name]:
+                continue
+            self.sources[name] = stamp
+            try:
+                value = json.loads(path.read_text(encoding='utf-8'))
+                with self.lock:
+                    if name == 'controls.json':
+                        self.simulation = Simulation.parse(value)
+                    else:
+                        self.services = VehicleServices.parse(value)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue  # A half-written or unrelated file must not stop the bus.
 
     # -- control ----------------------------------------------------------
     def handle(self, request: dict) -> dict:
@@ -113,12 +150,17 @@ class GatewayService:
                     self.simulation = Simulation.parse(request["simulation"])
                 if "vehicle_services" in request:
                     self.services = self.services.patched(request["vehicle_services"])
+                if 'follow_session' in request:
+                    if type(request['follow_session']) is not bool:
+                        raise ValueError('follow_session must be true or false.')
+                    self.follow_session = request['follow_session']
                 if "transmit" in request:
                     if type(request["transmit"]) is not bool:
                         raise ValueError("transmit must be true or false.")
                     self.transmit = request["transmit"]
                 return {"simulation": self.simulation.as_dict(),
-                        "vehicle_services": self.services.as_dict(), "transmit": self.transmit}
+                        "vehicle_services": self.services.as_dict(), "transmit": self.transmit,
+                        "follow_session": self.follow_session}
         if action == "snapshot":
             with self.lock:
                 return {"frames": snapshot(self.simulation, self.services)}
@@ -133,7 +175,10 @@ class GatewayService:
 
     def status(self) -> dict:
         with self.lock:
-            local = {"simulation": self.simulation.as_dict(), "transmit": self.transmit,
+            local = {"simulation": self.simulation.as_dict(),
+                     "vehicle_services": self.services.as_dict(),
+                     "transmit": self.transmit, "follow_session": self.follow_session,
+                     "state_source": "session" if self.follow_session else "panel",
                      "recent_state_changes": self.applied[-5:]}
         return {"service": "running", "environment": backend_report(),
                 "bridge": {"endpoint": list(self.bridge.endpoint), "peers": len(self.bridge.peers)} if self.bridge else {},
@@ -144,6 +189,7 @@ class GatewayService:
 
     # -- loop -------------------------------------------------------------
     def step(self) -> None:
+        self.refresh_from_session()
         self.bus.poll(0)
         if self.bridge:
             self.bridge.service(0)
