@@ -297,3 +297,22 @@ def test_replay_gps_requires_committed_fresh_frame_and_respects_takeover():
     assert replay_location(status | {"phase": "seeking-playing"}, {}, 100.2) is None
     assert replay_location(status | {"phase": "manual"}, {}, 100.2) is None
     assert replay_location(status | {"frame_ready": False}, {}, 100.2) is None
+
+
+@pytest.mark.parametrize('batch', [None, batch_calls])
+def test_skipped_names_are_left_to_the_user_override(batch):
+    display = FakeDisplay()
+    writer = DisplayWriter(display, batch=batch)
+    writer.skip = {'speed'}
+    report, detail = writer.apply({'drive': {'speed': 22}, 'settings': {'mute': True}, 'config': {'speed': 5}})
+    assert detail['drive'] == {} and detail['settings'] == {'mute': 'accepted'}
+    assert detail['config'] == {'speed': 'accepted'} and display.values['speed'] == 5
+
+
+def test_power_meter_accepts_drive_and_regen_kilowatts():
+    assert VehicleServices.parse({"power_level": 400}).power_level == 400
+    model = VehicleServices.parse({"power_level": -100})
+    assert display_values(model)["power_level"] == {"VAPI_powerLevel": -100.0}
+    for value in (400.5, -100.5):
+        with pytest.raises(ValueError, match="power_level"):
+            VehicleServices.parse({"power_level": value})

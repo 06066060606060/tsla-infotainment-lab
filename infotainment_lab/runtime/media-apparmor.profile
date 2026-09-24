@@ -41,3 +41,13 @@ profile /usr/tesla/UI/bin/QtCarCluster flags=(attach_disconnected,mediate_delete
   ptrace,
   /** rwkmlix,
 }
+
+profile /usr/tesla/UI/bin/QtCarDvServer flags=(attach_disconnected,mediate_deleted) {
+  capability,
+  network,
+  unix,
+  dbus,
+  signal,
+  ptrace,
+  /** rwkmlix,
+}

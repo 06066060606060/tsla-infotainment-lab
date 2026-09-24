@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -10,6 +11,8 @@ from PySide6.QtWidgets import QApplication
 
 from infotainment_lab.application import MainWindow
 from infotainment_lab import lab_panels
+from infotainment_lab import config_panel
+from infotainment_lab.config_csv import pending as config_pending
 from infotainment_lab.bridge import Bridge
 from infotainment_lab.vehicle_services import VehicleServices
 
@@ -190,7 +193,7 @@ def test_service_apply_patches_only_edits_and_preserves_them_through_old_feedbac
     panel.widgets['battery_percent'].setValue(72)
     panel.apply()
     assert payloads(window, 'vehicle-services') == [{'battery_percent': 72}]
-    assert not panel.apply_button.isEnabled()
+    assert panel.pending is not None
     panel.update_status(old)
     assert panel.widgets['battery_percent'].value() == 72
     panel.acknowledge(True)
@@ -226,20 +229,20 @@ def test_invalid_location_is_not_sent_and_still_can_be_edited(window):
     assert panel.dirty == {'latitude_deg'}
 
 
-def test_language_rebuild_preserves_browser_and_service_drafts_without_applying(window):
+def test_rebuild_preserves_browser_and_service_drafts_without_applying(window):
     window.session = service_session()
     window.update_status()
     window.browser_panel.url.setText('https://example.com/unsubmitted')
     window.services_panel.widgets['battery_percent'].setValue(72)
     window.services_panel.tabs.setCurrentIndex(3)
-    window.show_page(6)
+    window.show_page(1)
     window.calls.clear()
-    window.change_language(1)
+    window.rebuild()
     assert window.browser_panel.url.text() == 'https://example.com/unsubmitted'
     assert window.services_panel.widgets['battery_percent'].value() == 72
     assert window.services_panel.dirty == {'battery_percent'}
     assert window.services_panel.tabs.currentIndex() == 3
-    assert window.page_title.text() == '车辆服务'
+    assert window.page_title.text() == 'Vehicle controls'
     assert payloads(window, 'vehicle-services') == [] and payloads(window, 'replay') == []
 
 
@@ -253,7 +256,8 @@ def test_replay_control_takeover_starts_from_the_recorded_state(window):
     window.send_controls()
     requested = payloads(window, 'controls')[-1]
     assert requested == {'gear': 'D', 'speed_kph': 42, 'throttle_pct': 12,
-                         'brake_pct': 0, 'steering_deg': 90, 'indicator': 'left'}
+                         'brake_pct': 0, 'steering_deg': 90, 'indicator': 'left',
+                         'car_off': False}
 
 
 def test_stale_replay_poll_does_not_replace_a_manual_edit_while_it_is_debounced(window):
@@ -304,7 +308,7 @@ def test_can_panel_reports_a_refusal_and_a_stopped_service(window):
                                                 'reason': 'the gateway session is locked'}})
     assert 'locked' in panel.result.text()
     panel.received('can-status', {'ok': True, 'data': {'service': 'stopped'}})
-    assert 'stopped' in panel.state.text() or '未运行' in panel.state.text()
+    assert 'stopped' in panel.state.text()
 
 
 def test_can_panel_renders_a_decoded_trace(window):
@@ -316,3 +320,299 @@ def test_can_panel_renders_a_decoded_trace(window):
     assert 'LAB_driveState' in panel.frames.text()
     assert 'gear=D' in panel.trace.text()
     assert panel.since == 5
+
+
+def cfg_row(panel, name):
+    return next(row for row in panel.rows if row['name'] == name)
+
+
+def cfg_shown(panel):
+    return [panel.table.item(i, 0).text() for i in range(panel.table.rowCount())]
+
+
+def test_config_panel_lists_the_default_keys_and_import_compares_against_them(window):
+    from infotainment_lab.config_csv import profile_defaults
+    panel = window.config_panel
+    assert [row['name'] for row in panel.rows] == list(profile_defaults())
+    assert config_pending(panel.rows) == 0
+    assert panel.load('Name,Value\nAPP_fsd,0\nAUDIO_a2b,@invalid\nAPTRIAL_force,false\nAPP_fsd,1\nVAPI_carType,ModelS2\n') == (['AUDIO_a2b'], [('APP_fsd', '0', '1')])
+    names = [row['name'] for row in panel.rows]
+    assert names[:len(profile_defaults())] == list(profile_defaults()) and names[-2:] == ['APP_fsd', 'APTRIAL_force']
+    car = cfg_row(panel, 'VAPI_carType')  # compared with the app default: shows the dump value, differs, waits for Apply
+    assert (car['value'], car['original'], car['applied']) == ('ModelS2', 'ModelX', 'ModelX')
+    assert cfg_row(panel, 'APP_fsd')['applied'] is None and cfg_row(panel, 'APP_fsd')['value'] == '1'  # new key: pending
+    assert config_pending(panel.rows) == 3 and '(3)' in panel.apply_button.text() and panel.apply_button.isEnabled()
+    panel.changed_only.setChecked(True)
+    assert cfg_shown(panel) == ['VAPI_carType']  # "changed" means different from the default
+    panel.changed_only.setChecked(False)
+    default_column = {panel.table.item(i, 0).text(): panel.table.item(i, 2).text() for i in range(panel.table.rowCount())}
+    assert default_column['VAPI_carType'] == 'ModelX' and default_column['APP_fsd'] == ''
+    panel.search.setText('force')
+    panel.table.selectRow(0)
+    panel.set_selected('true')
+    assert cfg_row(panel, 'APTRIAL_force')['value'] == 'true'
+    window.show_page(8)
+
+
+def test_config_panel_remove_selected_resets_a_default_key_and_drops_others(window):
+    panel = window.config_panel
+    panel.load('Name,Value\nAPP_fsd,0\n')
+    cfg_row(panel, 'VAPI_carType')['value'] = 'ModelS'
+    panel.search.setText('_')
+    panel.table.selectAll()
+    panel.remove_selected()
+    assert cfg_row(panel, 'VAPI_carType')['value'] == 'ModelX'
+    assert 'APP_fsd' not in {row['name'] for row in panel.rows} and 'APP_fsd' in panel.removed
+
+
+def test_config_panel_apply_sends_typed_values_live_and_shows_firmware_status(window, monkeypatch):
+    panel = window.config_panel
+    panel.load('Name,Value\nAPP_fsd,0\nVAPI_flag,false\n')
+    panel.update_status({'phase': 'running'})
+    window.calls.clear()
+    cfg_row(panel, 'VAPI_flag')['value'] = 'true'
+    cfg_row(panel, 'APP_fsd')['value'] = '3'
+    panel.refresh()
+    panel.apply()
+    assert payloads(window, 'config-values') == [{'values': {'APP_fsd': 3, 'VAPI_flag': True}, 'explicit': [], 'remove': []}]
+    assert not panel.apply_button.isEnabled()
+    panel.acknowledge(True)
+    assert config_pending(panel.rows) == 0
+    window.calls.clear()
+    firmware = {'com.tesla.CenterDisplay': {'VAPI_flag': 'accepted', 'APP_fsd': 'unsupported', 'GUI_one': 'unsupported'},
+                'com.tesla.ClusterDisplay': {'VAPI_flag': 'accepted', 'APP_fsd': 'unsupported', 'GUI_one': 'accepted'}}
+    panel.load('Name,Value\nAPP_fsd,0\nVAPI_flag,false\nGUI_one,1\n')
+    panel.acknowledge(True) if panel.pending else None
+    for row in panel.rows: row['applied'] = row['value']  # as if applied
+    panel.update_status({'phase': 'running', 'config_values': {'firmware': firmware}})
+    names = {row['name'] for row in panel.rows}
+    assert 'APP_fsd' not in names  # no display knows it: removed
+    assert 'GUI_one' in names  # one display accepts it: kept
+    assert [alert[1:] for alert in window.alerts] == [('The firmware does not know 1 config key(s); they were removed from the list.', ['APP_fsd'])]
+    assert payloads(window, 'config-values') == [{'values': {}, 'remove': ['APP_fsd']}]
+    status = {panel.table.item(i, 0).text(): panel.table.item(i, 3).text() for i in range(panel.table.rowCount())}
+    assert status['VAPI_flag'] == '✓ Applied' and status['GUI_one'] == 'Not supported'
+
+
+def test_config_panel_failed_apply_stays_pending_and_restart_resends(window):
+    panel = window.config_panel
+    panel.load('Name,Value\nVAPI_flag,false\n')
+    panel.update_status({'phase': 'running'})
+    cfg_row(panel, 'VAPI_flag')['value'] = 'true'
+    panel.apply()
+    panel.acknowledge(False)
+    assert panel.apply_button.isEnabled()
+    panel.acknowledge(True)
+    panel.apply()
+    panel.acknowledge(True)
+    panel.update_status({'phase': 'stopped'})
+    window.calls.clear()
+    panel.update_status({'phase': 'running'})
+    assert payloads(window, 'config-values') == [{'values': {'VAPI_flag': True}, 'explicit': []}]
+
+
+def test_config_panel_cell_edit_keeps_the_edited_item_and_updates_state(window):
+    panel = window.config_panel
+    panel.load('Name,Value\nAPP_fsd,0\n')
+    panel.apply()
+    panel.search.setText('VAPI_carType')
+    item = panel.table.item(0, 1)
+    item.setText('ModelS')
+    assert panel.table.item(0, 1) is item  # not rebuilt from inside its own signal
+    assert cfg_row(panel, 'VAPI_carType')['value'] == 'ModelS' and item.font().bold()
+    assert '1 changed' in panel.summary.text() and '(1)' in panel.apply_button.text()
+    item.setText('ModelX')
+    assert not item.font().bold() and '0 changed' in panel.summary.text()
+
+
+def test_config_import_reports_what_differs_and_what_was_removed(window, monkeypatch, tmp_path):
+    shown = []
+    monkeypatch.setattr(config_panel.QMessageBox, 'exec', lambda box: shown.append((box.text(), box.detailedText())))
+    path = tmp_path / 'export.csv'
+    path.write_text('Name,Value\nAPP_fsd,0\nAUDIO_a2b,@invalid\nAPP_fsd,1\nVAPI_carType,ModelS\n')
+    monkeypatch.setattr(config_panel.QFileDialog, 'getOpenFileName', lambda *a: (str(path), ''))
+    window.config_panel.open_file()
+    text, details = shown[0]
+    assert 'Imported 2 entries: 1 differ from the app defaults, 1 are new keys' in text
+    assert 'Skipped 1 @invalid' in text and 'removed 1 duplicates' in text
+    assert '  AUDIO_a2b' in details and 'APP_fsd: 0 → 1' in details
+
+
+def test_config_defaults_drop_foreign_keys_and_add_key_adds_one(window, monkeypatch):
+    from infotainment_lab.config_csv import profile_defaults
+    monkeypatch.setattr(config_panel.QMessageBox, 'question', lambda *a, **k: config_panel.QMessageBox.Yes)
+    panel = window.config_panel
+    panel.update_status({'phase': 'running'})
+    panel.load('Name,Value\nAPP_other,3\n')
+    panel.new_name.setText('VAPI_myFlag')
+    panel.new_value.setText('true')
+    panel.add_key()
+    assert {row['name'] for row in panel.rows} == set(profile_defaults()) | {'APP_other', 'VAPI_myFlag'}
+    window.calls.clear()
+    panel.apply()
+    assert payloads(window, 'config-values') == [{'values': {'APP_other': 3, 'VAPI_myFlag': True}, 'explicit': ['VAPI_myFlag'], 'remove': []}]
+    panel.acknowledge(True)
+    panel.revert()
+    assert [row['name'] for row in panel.rows] == list(profile_defaults())
+    assert panel.removed == {'APP_other', 'VAPI_myFlag'}
+    window.calls.clear()
+    panel.apply()
+    assert payloads(window, 'config-values') == [{'values': {}, 'explicit': [], 'remove': ['APP_other', 'VAPI_myFlag']}]
+    panel.acknowledge(True)
+    assert panel.removed == set()
+    panel.new_name.setText('bad name')
+    panel.add_key()
+    assert 'letters' in window.banner.text()
+
+
+def test_config_apply_of_car_config_asks_then_saves_and_restarts_the_device_once(window, monkeypatch):
+    panel = window.config_panel
+    panel.update_status({'phase': 'running'})
+    asked = []
+    monkeypatch.setattr(config_panel.QMessageBox, 'question', lambda *a, **k: asked.append(a[2]) or config_panel.QMessageBox.No)
+    cfg_row(panel, 'VAPI_carType')['value'] = 'ModelS'
+    panel.refresh()
+    window.calls.clear()
+    panel.apply()
+    assert len(asked) == 1 and 'VAPI_carType' in asked[0] and 'restart once' in asked[0] and payloads(window, 'config-values') == []
+    assert panel.apply_button.isEnabled()  # declined: still pending, nothing restarted
+    monkeypatch.setattr(config_panel.QMessageBox, 'question', lambda *a, **k: config_panel.QMessageBox.Yes)
+    panel.apply()
+    assert payloads(window, 'config-values') == [{'values': {'VAPI_carType': 'ModelS'}, 'explicit': [], 'remove': []}]
+    assert not any(call[0] == 'restart' for call in window.calls)  # only after the save is acknowledged
+    panel.acknowledge(True)
+    assert [call[0] for call in window.calls if call[0] == 'restart'] == ['restart']
+    window.busy = False  # the restart is mocked; a real one would clear this when it finishes
+    panel.acknowledge(True)
+    assert [call[0] for call in window.calls].count('restart') == 1
+    panel.load('Name,Value\nAPP_free,1\n')
+    cfg_row(panel, 'APP_free')['value'] = '2'  # not car config: applied live, no prompt, no restart
+    monkeypatch.setattr(config_panel.QMessageBox, 'question', lambda *a, **k: (_ for _ in ()).throw(AssertionError('asked')))
+    window.calls.clear()
+    panel.apply()
+    panel.acknowledge(True)
+    assert not any(call[0] == 'restart' for call in window.calls)
+
+
+def test_config_panel_resets_values_the_supervisor_dropped_after_repeated_restarts(window):
+    panel = window.config_panel
+    row = cfg_row(panel, 'VAPI_carType')
+    row['value'] = row['applied'] = 'ModelS'
+    panel.update_status({'phase': 'starting', 'config_values': {'conflicts': ['VAPI_carType']}})
+    assert row['value'] == row['applied'] == row['original'] == 'ModelX'
+    assert window.alerts[-1][2] == ['VAPI_carType'] and 'kept restarting' in window.alerts[-1][1]
+    row['value'] = 'ModelS'
+    panel.update_status({'phase': 'starting', 'config_values': {'conflicts': ['VAPI_carType']}})
+    assert row['value'] == 'ModelS'  # reported once, not on every poll
+
+
+def test_config_panel_reverts_and_lists_entries_the_backend_refused(window, monkeypatch):
+    panel = window.config_panel
+    panel.load('Name,Value\nGUI_ok,1\nGUI_big,2\n')
+    panel.update_status({'phase': 'running'})
+    panel.apply()
+    panel.acknowledge(True, {'count': 1, 'rejected': ['GUI_big']})
+    assert {row['name'] for row in panel.rows} >= {'GUI_ok'} and 'GUI_big' not in {row['name'] for row in panel.rows}
+    assert cfg_row(panel, 'GUI_ok')['applied'] == '1'
+    assert [alert[2] for alert in window.alerts] == [['GUI_big']]
+    assert window.alert_rows.count() == 1 and window.nav_group.button(3).text() == 'Diagnostics  (1)'
+    window.clear_alerts()
+    assert window.nav_group.button(3).text() == 'Diagnostics'
+    assert window.alert_rows.count() == 0 and not window.alert_box.isHidden() and not window.alert_empty.isHidden()
+    assert not window.clear_alerts_button.isEnabled()
+
+
+def test_config_panel_alerts_say_why_the_firmware_restarted(window):
+    panel = window.config_panel
+    history = [{'at': 10.0, 'display': 'center', 'names': ['VAPI_trim', 'GUI_x'], 'dropped': []},
+               {'at': 11.0, 'display': 'instruments', 'names': [], 'dropped': []}]
+    panel.update_status({'phase': 'starting', 'config_values': {'restarts': history}})
+    assert [alert[1:] for alert in window.alerts] == [
+        ('The center display restarted its UI because 2 car-config value(s) changed.', ['VAPI_trim', 'GUI_x']),
+        ('The instrument cluster restarted its UI to apply settings; the firmware did not name the values.', [])]
+    panel.update_status({'phase': 'running', 'config_values': {'restarts': history}})
+    assert len(window.alerts) == 2  # each restart is reported once
+
+
+def test_banner_names_the_values_a_configuration_restart_applies(window):
+    window.session = {'phase': 'starting', 'configuration_restart': True, 'changed_dvs': ['VAPI_trim']}
+    window.update_status()
+    assert 'VAPI_trim' in window.banner.text()
+
+
+def test_config_panel_refuses_a_personal_key_before_sending_it(window):
+    panel = window.config_panel
+    panel.new_name.setText('GUI_valetModePassword')
+    panel.new_value.setText('1234')
+    panel.add_key()
+    assert 'GUI_valetModePassword' not in {row['name'] for row in panel.rows}
+    assert 'personal data' in window.alerts[0][1]
+
+
+def test_config_panel_marks_only_deliberate_edits_as_explicit(window):
+    panel = window.config_panel
+    panel.update_status({'phase': 'running'})
+    panel.load('Name,Value\nVAPI_batteryLevel,10\nVAPI_isLocked,true\n')  # an import: the app's model stays in charge
+    assert not any(row.get('explicit') for row in panel.rows)
+    panel.search.setText('VAPI_batteryLevel')
+    panel.table.item(0, 1).setText('30')  # a deliberate edit: this value wins over the app's model
+    assert cfg_row(panel, 'VAPI_batteryLevel')['explicit'] and not cfg_row(panel, 'VAPI_isLocked').get('explicit')
+    window.calls.clear()
+    panel.apply()
+    assert payloads(window, 'config-values') == [{'values': {'VAPI_batteryLevel': 30, 'VAPI_isLocked': True}, 'explicit': ['VAPI_batteryLevel'], 'remove': []}]
+
+
+def test_console_screen_applies_carriage_return_backspace_and_line_erase(window):
+    panel = window.console_panel
+    panel.feed('abcd\b\bX\r> \x1b[K')  # overwrite, back up, redraw the line and erase its tail
+    assert panel.rows[-1] == '> '
+    panel.feed('\none\ntwo\x1b]0;title\x07!')
+    assert panel.rows[-2:] == ['one', 'two!']
+    assert panel.output.textCursor().position() == len(panel.output.toPlainText())
+
+
+def test_qemu_console_enters_the_firmware_root_in_the_guest(window, monkeypatch):
+    started = []
+    monkeypatch.setattr(lab_panels.QProcess, 'start', lambda self, program, args: started.append([program, *args]))
+    panel = window.console_panel
+    window.bridge.engine = 'qemu'
+    panel.key_ready = True
+    panel.toggle()
+    script = started[0][-1].split('; ', 1)[1]
+    ssh = shlex.split(script.split('exec ', 1)[1])
+    assert ssh[0] == 'ssh' and ssh[-2] == 'lab@127.0.0.1'
+    assert ssh[-1] == lab_panels.GUEST_CID_SHELL  # one remote argument, quoted intact
+    assert 'R=/firmware' in ssh[-1] and 'chroot "$R"' in ssh[-1]
+    panel.disconnect_now()
+
+
+def test_service_edits_apply_on_their_own_and_modes_tab_replaces_service_mode_notes(window):
+    panel = window.services_panel
+    panel.update_status(service_session())
+    assert not hasattr(panel, "apply_button")
+    assert panel.tabs.tabText(panel.tabs.count() - 1) == "Modes"
+    panel.widgets["developer_mode"].setChecked(True)
+    assert panel.timer.isActive()
+    panel.timer.timeout.emit()
+    assert payloads(window, "vehicle-services") == [{"developer_mode": True}]
+
+
+def test_a_new_full_import_starts_from_the_defaults_so_nothing_carries_over(window, monkeypatch):
+    monkeypatch.setattr(config_panel.QMessageBox, 'question', lambda *a, **k: config_panel.QMessageBox.Yes)
+    panel = window.config_panel
+    panel.update_status({'phase': 'running'})
+    panel.load('Name,Value\nVAPI_carType,ModelS2\nAPP_old,1\nAPP_both,1\nPOWER_state,on\n')
+    panel.apply()
+    panel.acknowledge(True)
+    window.busy = False  # the car-config change restarted the device; it is back up
+    panel.update_status({'phase': 'running'})
+    assert config_pending(panel.rows) == 0
+    panel.load('Name,Value\nAPP_both,1\nAPP_new,2\n')
+    car = cfg_row(panel, 'VAPI_carType')  # set by the old file only: back to its default, written on Apply
+    assert (car['value'], car['applied']) == ('ModelX', 'ModelS2')
+    assert cfg_row(panel, 'APP_both')['applied'] == '1'  # already applied with the same value: nothing to send
+    assert {row['name'] for row in panel.rows} >= {'APP_both', 'APP_new'} and 'APP_old' not in {row['name'] for row in panel.rows}
+    assert panel.removed == {'APP_old'}  # listed-only telemetry was never sent, so there is nothing to remove
+    window.calls.clear()
+    panel.apply()
+    assert payloads(window, 'config-values') == [{'values': {'VAPI_carType': 'ModelX', 'APP_new': 2}, 'explicit': [], 'remove': ['APP_old']}]

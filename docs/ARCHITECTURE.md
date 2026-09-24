@@ -37,9 +37,10 @@ flowchart LR
 
 ## Native desktop and backend
 
-`application.py`, `workspace.py`, `presentation.py` and `lab_panels.py` own the
-native widgets, bilingual labels, device manager and the Camera & replay,
-Browsers and Vehicle services panels. Launch choices are stored per image in
+`application.py`, `workspace.py`, `presentation.py`, `lab_panels.py` and
+`config_panel.py` own the native widgets, device manager and the Camera & replay,
+Browsers, Vehicle services, CAN & gateway, Console and Vehicle config panels.
+Diagnostics holds an Alerts card fed by configuration refusals and restarts. Launch choices are stored per image in
 Qt's user settings. Pages scroll when content exceeds the window. Errors remain
 visible independently of background polling.
 
@@ -70,14 +71,29 @@ instances on fixed firmware loopback endpoints.
 displays, starts a private D-Bus session and launches ordinary user processes
 from the firmware's UI directory. Its working directory is significant because
 firmware assets use relative paths. The supported MCU2 center canvas is
-1200×1920 at 0.6 scale; the instruments use a separate display.
+1200×1920 at 0.6 scale; the instruments use a separate display. On WSL,
+`display_scale.firmware_scale()` multiplies that window scale by the Windows
+display scale, fitted to the desktop in 1/16 steps, and the Xephyr screens,
+QtCar/QtCarCluster `--window`, the visualization and, in QEMU mode, the
+virtio-gpu output are sized to match.
 
 Recognized first-run configuration restarts have a bounded retry path. Each
 Chromium mode has its own retry counter. The music workers and display link
 also have two delayed recovery attempts. Other exits become visible errors or
 degraded component status. Closing a firmware display ends the session. Stop
 terminates the service's cgroup and unmounts this application's FUSE mounts;
-it does not search for and kill unrelated vendor-named processes.
+it does not search for and kill unrelated vendor-named processes. A mount still
+held by a Console shell or a process that outlived the service is released with
+a lazy `fusermount3 -u -z`, which is safe because the image is read-only; a dead
+mount left by a crashed `squashfuse` is cleared the same way before the next
+start (`release_mount()`, `stale_mount()` in `backend.py`). Full reset uses the
+same path and never deletes through a mount it could not release.
+
+Car-config values the firmware watches make it restart its UI. The supervisor
+treats those exits as configuration restarts, records each one in
+`session/config-restarts.json`, and drops contradictory language settings after
+three restarts; the panel lists them as alerts. See
+[vehicle configuration](vehicle-config.md).
 
 Restart validates the saved image references before stopping the active device.
 Manual driving controls start in Park. A persisted replay source waits for Play
@@ -93,6 +109,30 @@ application methods. Browser/Card accept HTTP/HTTPS addresses; Theater opens
 the firmware's own catalog. The visible Browser/Card buttons change the layout
 of the same browser app and share its profile; this is separate from launching
 the firmware's additional registered Chromium service instances.
+
+The Service Mode card embeds the firmware's `ChromiumOdin` window, which loads
+`http://localhost:8000` from the firmware's `/opt/odin/service-ui` backend.
+`runtime/service-ui-netns.py` runs that backend in an unprivileged network
+namespace holding the vehicle-network address it binds, and relays its port to
+the host through a Unix socket. The backend reads vehicle values from the
+firmware's `QtCarDvServer` over `/tmp/dbus_dvaccess`. `runtime/odin-engine.py`
+stands in for the vehicle's Odin engine: it owns `com.tesla.Odin` on the session
+bus and serves the engine websocket that the wrapper relays from the namespace's
+`127.0.0.1:8080`. It answers catalogue requests from the image and finishes every
+task as not runnable. These processes are optional: the session is not degraded
+when they exit.
+
+`runtime/native-netguard.c` is preloaded into every firmware process the lab
+starts. It makes lookups of names under Tesla's domains fail and logs
+`netguard: blocked lookup of …`, while the two local media names resolve to
+loopback; Chromium gets matching resolver rules. Literal IP connections are not
+intercepted.
+
+The Console panel runs a shell on a real pty. On the native engine it enters the
+mounted firmware root through a user namespace (`unshare`, no root). On the QEMU
+engine it connects with `ssh` to the guest's loopback-only forward
+(`127.0.0.1:2222`) using a lab-owned ed25519 key authorized through the guest
+agent, and runs the same namespace entry on the guest's `/firmware` mount.
 
 `runtime/browser-page.py` serves the bundled interaction check on an ephemeral
 port bound to `127.0.0.1`. It serves only that page, has no command endpoint or
@@ -110,7 +150,10 @@ modified.
 
 ## Shared vehicle state
 
-`simulation.py` validates the six manual driving inputs. `vehicle_services.py`
+`simulation.py` validates the manual driving inputs and the Car off state.
+Car off forces Park and moves the power rails, driver-present, accessory and
+display keep-alive/backlight values into its off state, so `keep-awake.py` no
+longer holds the displays awake. `vehicle_services.py`
 validates the wider local vehicle model and declares each domain's capabilities.
 The native service panel submits partial changes, which the backend merges into
 the current model before atomically replacing the requested state file.

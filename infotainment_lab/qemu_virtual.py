@@ -17,6 +17,7 @@ import time
 import uuid
 
 from .core import atomic_json, validate_image
+from .display_scale import scaled
 from .host_graphics import environment
 from .qemu_runtime import (ensure_idle, lifecycle_lock, option_path,
                            process_identity, read_state, verify_identity)
@@ -41,7 +42,10 @@ def prepared_files(directory):
         ('disk', 'desktop.raw'), ('kernel', 'vmlinuz-' + version), ('initrd', 'initrd.img-' + version))}
 
 
-def launch_arguments(directory, identifier, *, disk, kernel, initrd, firmware, internet=True, display='sdl', single_display=False, options_file=None, maps=None, inputs=None):
+SSH_PORT = 2222  # host loopback only; forwarded to the guest's sshd
+
+
+def launch_arguments(directory, identifier, *, disk, kernel, initrd, firmware, internet=True, display='sdl', single_display=False, options_file=None, maps=None, inputs=None, display_scale=1.0):
     directory = Path(directory)
     for path in (disk, kernel, initrd, firmware):
         regular_file(path)
@@ -50,6 +54,10 @@ def launch_arguments(directory, identifier, *, disk, kernel, initrd, firmware, i
     validate_image(Path(firmware))
     if display not in ('gtk', 'sdl'):
         raise ValueError('Select the GTK or SDL native display.')
+    if not 1 <= float(display_scale) <= 4:
+        raise ValueError('The display scale must be between 1 and 4.')
+    center = scaled((1920, 1200) if single_display else (720, 1152), float(display_scale))
+    cluster = scaled((1280, 480), float(display_scale))
     extras = []
     if inputs:
         expected = (directory / 'inputs').absolute()
@@ -72,10 +80,10 @@ def launch_arguments(directory, identifier, *, disk, kernel, initrd, firmware, i
             '-append', 'console=tty0 console=ttyS0,115200 root=/dev/vda rw loglevel=4',
             '-drive', f'file={option_path(disk)},if=virtio,format=raw',
             '-drive', f'file={option_path(firmware)},if=virtio,format=raw,readonly=on',
-            '-device', 'virtio-vga-gl,max_outputs=1,' + ('xres=1920,yres=1200' if single_display else 'xres=720,yres=1152'),
-            '-device', 'virtio-gpu-pci,id=cluster-gpu,addr=0x08,max_outputs=1,xres=1280,yres=480',
+            '-device', 'virtio-vga-gl,max_outputs=1,xres=%d,yres=%d' % center,
+            '-device', 'virtio-gpu-pci,id=cluster-gpu,addr=0x08,max_outputs=1,xres=%d,yres=%d' % cluster,
             '-display', 'sdl,gl=on' if display == 'sdl' else 'gtk,gl=on,show-cursor=on,show-tabs=on',
-            '-netdev', 'user,id=net0' + ('' if internet else ',restrict=on'),
+            '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22' + ('' if internet else ',restrict=on'),
             '-device', 'virtio-net-pci,netdev=net0',
             '-device', 'qemu-xhci', '-device', 'usb-tablet',
             '-audiodev', 'pa,id=audio0,out.frequency=48000,out.latency=60000,out.buffer-length=120000', '-device', 'intel-hda',
@@ -208,6 +216,27 @@ def guest_execute(directory, argv, timeout=15):
                         return output
                     time.sleep(.1)
                 raise TimeoutError('Guest command is still pending; completion has not been established.')
+
+
+def ensure_ssh_key():
+    """Create this lab's own ed25519 key on first use and return its private path."""
+    data = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share'))
+    key = data / 'tsla-infotainment-lab' / 'ssh' / 'id_ed25519'
+    if not key.exists():
+        key.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'infotainment-lab', '-f', str(key)],
+                       check=True, capture_output=True)
+    return key
+
+
+def install_ssh_key(directory, public_key):
+    """Authorize one public key for the guest's lab user and make sure sshd is running."""
+    script = ('set -e; d=/home/lab/.ssh; install -d -m 700 -o lab -g lab "$d"; '
+              'grep -qxF "$1" "$d/authorized_keys" 2>/dev/null || echo "$1" >> "$d/authorized_keys"; '
+              'chown lab:lab "$d/authorized_keys"; chmod 600 "$d/authorized_keys"; '
+              '[ -x /usr/sbin/sshd ] || { echo "This guest image has no SSH server; rebuild it with scripts/build-virtual-guest.py." >&2; exit 3; }; '
+              'systemctl enable --now ssh')
+    guest_execute(directory, ['/bin/sh', '-c', script, 'sh', public_key.strip()], timeout=30)
 
 
 def status(directory):

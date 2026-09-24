@@ -10,7 +10,7 @@ import backend
 from guest_status import session_status
 
 ACTIONS = frozenset(('status', 'controls', 'preview', 'capture', 'camera-preview',
-                     'camera', 'replay', 'vehicle-services', 'browser', 'steering', 'logs', 'focus',
+                     'camera', 'replay', 'vehicle-services', 'config-values', 'browser', 'steering', 'logs', 'focus',
                      'can', 'can-start', 'can-status'))
 
 
@@ -51,6 +51,8 @@ def handle(action, payload):
         return backend.set_camera(payload.get('source', 'pattern'), payload.get('path'))
     if action == 'replay':
         return backend.set_replay(payload)
+    if action == 'config-values':
+        return backend.set_config_values(payload)
     if action == 'vehicle-services':
         return backend.set_vehicle_services(payload)
     if action == 'browser':

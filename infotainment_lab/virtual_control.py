@@ -12,7 +12,16 @@ import time
 
 from . import qemu_virtual as vm
 from .core import atomic_json, profile_for
+from .display_scale import firmware_scale
 from .qemu_runtime import read_state, verify_identity
+
+
+def build_manifest(directory):
+    try:
+        manifest = json.loads((Path(directory) / 'build.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
 
 
 def directory_for(args, backend):
@@ -90,6 +99,12 @@ def dispatch(args, backend):
     if action == 'report':
         environment = probe(directory, backend)
         return backend.public_report(environment['status'], environment)
+    if action == 'ssh-key':
+        if vm.status(directory)['phase'] == 'stopped':
+            raise RuntimeError('Start the virtual CID first, then set up the SSH key.')
+        key = vm.ensure_ssh_key()
+        vm.install_ssh_key(directory, Path(str(key) + '.pub').read_text())
+        return {'installed': True}
     if action == 'start':
         item = backend.library_item(args.id or '')
         profile = profile_for(item['version'], item['variant'])
@@ -102,8 +117,11 @@ def dispatch(args, backend):
                 return current
             raise RuntimeError('Stop the current virtual machine before changing firmware.')
         files = vm.prepared_files(directory)
+        single = bool(profile.get('single_display'))
+        # Older guest images draw at the default size whatever the host asks.
+        scale = firmware_scale(single) if build_manifest(directory).get('display_scale') else 1.0
         options = {'firmware_id': item['id'], 'browser': not args.no_browser,
-                   'cluster': not args.no_cluster, 'map_id': args.map_id}
+                   'cluster': not args.no_cluster, 'map_id': args.map_id, 'display_scale': scale}
         options_file = directory / 'launch-options.json'
         atomic_json(options_file, options)
         maps = None
@@ -113,7 +131,7 @@ def dispatch(args, backend):
                 raise ValueError('Select a map image for the map slot.')
             maps = Path(selected_map['path'])
         return vm.start(directory, **files, firmware=Path(item['path']), options_file=options_file,
-                        single_display=bool(profile.get('single_display')), maps=maps)
+                        single_display=single, maps=maps, display_scale=scale)
     if action == 'stop':
         if vm.status(directory)['phase'] == 'stopped':
             return {'phase': 'stopped', 'mode': 'virtual-hardware'}

@@ -17,11 +17,6 @@ def font_environment(firmware: Path, state: Path) -> dict[str, str]:
         match = ET.SubElement(root, 'match', target='pattern')
         ET.SubElement(ET.SubElement(match, 'test', name='family'), 'string').text = source
         ET.SubElement(ET.SubElement(match, 'edit', name='family', mode='assign'), 'string').text = target
-    # conf.d contains absolute symlinks for the vehicle root. Reference the
-    # mounted rule directly, without importing host/user font directories.
-    cjk_rules = firmware / 'usr/share/fontconfig/conf.avail/56-noto-sans-cjk.conf'
-    if cjk_rules.is_file():
-        ET.SubElement(root, 'include').text = str(cjk_rules.resolve())
     # Named fonts still follow the firmware's UI/assets/fonts.conf. Only generic
     # families need defaults; all fallback glyphs also come from this image.
     for generic, family in (('sans-serif', 'Universal Sans Text 530'),

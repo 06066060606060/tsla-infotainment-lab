@@ -109,3 +109,22 @@ def test_local_lock_requests_and_unknown_requests():
     interface.values['GUI_lockRequest'] = 'not-a-command'
     assert router.poll(interface, model) == model
     assert router.report['GUI_lockRequest'] == 'unsupported-request'
+
+
+def test_park_is_not_car_off_and_car_off_drops_the_driver():
+    from infotainment_lab.simulation import Simulation, display_values
+    from infotainment_lab.vehicle_services import VehicleServices, display_values as service_values
+    park = display_values(Simulation(gear='P'))['rails']
+    assert park['VAPI_accRailOn'] and park['VAPI_driverPresent'] and park['VAPI_vehicleInAccessoryPlus']
+    assert not park['VAPI_driveRailOn']
+    assert park['GUI_enableDisplayKeepAlive'] and park['VAPI_icLCDOn'] and park['VAPI_icBacklightOn']
+    off = display_values(Simulation(gear='P', car_off=True))['rails']
+    assert not any(off.values())
+    # A car switched off while driving is parked and stopped.
+    stopped = Simulation.parse({'gear': 'D', 'speed_kph': 80, 'throttle_pct': 30, 'car_off': True})
+    assert (stopped.gear, stopped.speed_kph, stopped.throttle_pct) == ('P', 0, 0)
+    charging = service_values(VehicleServices(charging=True))['charging']
+    assert charging['VAPI_chargePortLatch'] == 'Engaged' and charging['VAPI_chargePortCoverClosed'] is False
+    assert 'VAPI_chargePortLatch' not in service_values(VehicleServices())['charging']
+    assert charging['GTW_chargeState'] == 'Charging'
+    assert service_values(VehicleServices())['charging']['GTW_chargeState'] == 'Disconnected'

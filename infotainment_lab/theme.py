@@ -45,7 +45,7 @@ def state(widget, name, value):
 
 def stylesheet(c):
     template = '''
-QWidget { background: transparent; color: @on_surface; font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Noto Sans CJK SC', sans-serif; font-size: 14px; }
+QWidget { background: transparent; color: @on_surface; font-family: 'Segoe UI', sans-serif; font-size: 14px; }
 QMainWindow, QDialog, QMessageBox, QMenu { background: @surface; }
 QFrame#sidebar { background: @container; border-radius: 24px; }
 QFrame#card, QFrame#panel { background: @container; border: 0; border-radius: 24px; }

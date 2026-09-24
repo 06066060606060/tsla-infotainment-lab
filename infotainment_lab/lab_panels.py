@@ -1,8 +1,11 @@
 """Desktop controls for browser views, recorded drives and local vehicle state."""
 import json
-from PySide6.QtCore import Qt
+import re
+import shlex
+import os
+from PySide6.QtCore import Qt, QProcess, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget, QFrame)
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QApplication, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget, QFrame)
 
 from .material_widgets import MaterialSwitch as QCheckBox
 from .vehicle_services import FIELD_SPECS, VehicleServices
@@ -13,13 +16,12 @@ class Panel(QFrame):
         super().__init__()
         self.setObjectName('panel')
         self.window = window
-        self.tr2 = window.tr2
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(24, 24, 24, 24)
         self.layout.setSpacing(12)
 
-    def text(self, en, zh, style='muted'):
-        item = QLabel(self.tr2(en, zh))
+    def text(self, en, style='muted'):
+        item = QLabel(en)
         item.setObjectName(style)
         item.setWordWrap(True)
         self.layout.addWidget(item)
@@ -32,24 +34,22 @@ class Panel(QFrame):
 class BrowserPanel(Panel):
     def __init__(self, window):
         super().__init__(window)
-        self.text('Open an address in Browser or Card view. Theater opens the firmware’s app catalog.',
-                  '使用浏览器或卡片模式打开网址。影院按钮打开固件内的应用目录。')
+        self.text('Open an address in Browser or Card view. Theater opens the firmware’s app catalog.')
         self.url = QLineEdit()
-        self.url.setPlaceholderText(self.tr2('https://…   Leave blank for the local browser check', 'https://…   留空打开本地浏览器测试页'))
-        self.url.setAccessibleName(self.tr2('Website address', '网页地址'))
+        self.url.setPlaceholderText('https://…   Leave blank for the local browser check')
+        self.url.setAccessibleName('Website address')
         self.layout.addWidget(self.url)
         row = QHBoxLayout()
         self.buttons = []
-        for mode, en, zh in (('browser', 'Browser', '浏览器'), ('card', 'Card view', '卡片模式'), ('theater', 'Theater', '影院')):
-            button = window.button(en, zh, lambda checked=False, m=mode: self.open(m))
+        for mode, en in (('browser', 'Browser'), ('card', 'Card view'), ('theater', 'Theater')):
+            button = window.button(en, lambda checked=False, m=mode: self.open(m))
             row.addWidget(button)
             self.buttons.append(button)
         self.layout.addLayout(row)
-        self.health = self.text('', '', 'notice')
-        self.media_health = self.text('', '', 'notice')
-        self.audio_health = self.text('', '', 'notice')
-        self.text('In the browser check page, drag the slider, select text and move the tile. Use a parked simulation for video playback.',
-                  '在浏览器测试页内可拖动滑块、选择文字和移动方块。播放影院视频时请使用驻车模拟状态。')
+        self.health = self.text('', 'notice')
+        self.media_health = self.text('', 'notice')
+        self.audio_health = self.text('', 'notice')
+        self.text('In the browser check page, drag the slider, select text and move the tile. Use a parked simulation for video playback.')
         self.layout.addStretch()
 
     def open(self, mode):
@@ -67,24 +67,20 @@ class BrowserPanel(Panel):
         live = session.get('phase') in ('running', 'degraded')
         components = session.get('components', {})
         for button in self.buttons: button.setEnabled(live and components.get('chromium') == 'running')
-        modes = [('chromium', 'Browser', '浏览器'), ('chromium-card', 'Card', '卡片'), ('chromium-theater', 'Theater', '影院')]
-        self.health.setText('  ·  '.join(self.tr2(en, zh) + (' ●' if live and components.get(key) == 'running' else ' ○') for key, en, zh in modes))
+        modes = [('chromium', 'Browser'), ('chromium-card', 'Card'), ('chromium-theater', 'Theater')]
+        self.health.setText('  ·  '.join(en + (' ●' if live and components.get(key) == 'running' else ' ○') for key, en in modes))
         media = session.get('media', {}).get('state')
         audio = session.get('audio_transport', {})
         self.audio_health.setVisible(live and audio.get('phase') in ('degraded', 'failed', 'unavailable'))
-        self.audio_health.setText(self.tr2('Audio output is unavailable. Check your desktop sound output.',
-                                          '音频输出暂不可用，请检查电脑的声音输出。'))
+        self.audio_health.setText('Audio output is unavailable. Check your desktop sound output.')
         self.audio_health.setToolTip(audio.get('detail', ''))
         self.media_health.setVisible(live and media not in (None, 'disabled'))
         if media == 'peer-profile-rejected':
-            self.media_health.setText(self.tr2(
-                'Spotify is unavailable: the firmware rejected the media process security profile. This environment needs a compatible native service sandbox.',
-                'Spotify 暂不可用：固件拒绝了媒体进程的安全配置，需要兼容的原生服务隔离环境。'))
+            self.media_health.setText('Spotify is unavailable: the firmware rejected the media process security profile. This environment needs a compatible native service sandbox.')
         elif media == 'waiting-services':
-            self.media_health.setText(self.tr2('Starting native music services…', '正在启动原生音乐服务…'))
+            self.media_health.setText('Starting native music services…')
         else:
-            self.media_health.setText(self.tr2('Music services are running. Open Spotify in the center display to check login and playback.',
-                                               '音乐服务进程已启动。请在中控内检查 Spotify 登录和播放。'))
+            self.media_health.setText('Music services are running. Open Spotify in the center display to check login and playback.')
 
 
 class ReplayPanel(Panel):
@@ -92,36 +88,35 @@ class ReplayPanel(Panel):
         super().__init__(window)
         self.duration = 0
         self.phase = 'idle'
-        self.text('Recorded drive', '行车记录回放', 'subtitle')
-        self.text('Replay the video and its embedded driving data together. Moving a vehicle control takes over from the recording.',
-                  '同步回放视频与内嵌行驶数据。操作车辆控制后，将切换为手动输入。')
+        self.text('Recorded drive', 'subtitle')
+        self.text('Replay the video and its embedded driving data together. Moving a vehicle control takes over from the recording.')
         row = QHBoxLayout()
-        row.addWidget(window.button('Open dashcam MP4…', '打开行车记录 MP4…', self.open))
-        self.play = window.button('Play', '播放', self.toggle_play)
+        row.addWidget(window.button('Open dashcam MP4…', self.open))
+        self.play = window.button('Play', self.toggle_play)
         row.addWidget(self.play)
-        self.take_over = window.button('Take over', '手动接管', lambda: self.send('replay', action='manual'))
+        self.take_over = window.button('Take over', lambda: self.send('replay', action='manual'))
         row.addWidget(self.take_over)
         self.rate = QComboBox()
         for speed in (.25, .5, 1, 1.5, 2): self.rate.addItem(f'{speed:g}×', speed)
         self.rate.setCurrentIndex(2)
-        self.rate.setAccessibleName(self.tr2('Playback speed', '播放倍速'))
+        self.rate.setAccessibleName('Playback speed')
         self.rate.currentIndexChanged.connect(lambda _: self.send('replay', action='rate', rate=self.rate.currentData()))
         row.addWidget(self.rate)
-        self.loop = QCheckBox(self.tr2('Loop', '循环'))
+        self.loop = QCheckBox('Loop')
         self.loop.setChecked(True)
         self.loop.toggled.connect(lambda value: self.send('replay', action='loop', loop=value))
         row.addWidget(self.loop)
         self.layout.addLayout(row)
         self.seek = QSlider(Qt.Horizontal)
         self.seek.setRange(0, 1000)
-        self.seek.setAccessibleName(self.tr2('Replay position', '回放位置'))
+        self.seek.setAccessibleName('Replay position')
         self.seek.sliderReleased.connect(self.send_seek)
         self.seek.actionTriggered.connect(lambda _: self.send_seek() if not self.seek.isSliderDown() else None)
         self.layout.addWidget(self.seek)
-        self.feedback = self.text('Choose a dashcam recording with embedded telemetry.', '选择包含内嵌行驶数据的行车记录视频。', 'notice')
+        self.feedback = self.text('Choose a dashcam recording with embedded telemetry.', 'notice')
 
     def open(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.tr2('Open a recorded drive', '打开行车记录'), '', 'Dashcam (*.mp4)')
+        path, _ = QFileDialog.getOpenFileName(self, 'Open a recorded drive', '', 'Dashcam (*.mp4)')
         if path: self.window.bridge.call('camera', '--source', 'replay', '--path', path)
 
     def toggle_play(self):
@@ -139,26 +134,26 @@ class ReplayPanel(Panel):
         position = replay.get('position_seconds', 0)
         for widget in (self.play, self.seek, self.rate, self.loop): widget.setEnabled(live and self.phase != 'error')
         self.take_over.setEnabled(live)
-        self.play.setText(self.tr2('Pause', '暂停') if self.phase in ('playing', 'seeking-playing') else self.tr2('Play', '播放'))
+        self.play.setText('Pause' if self.phase in ('playing', 'seeking-playing') else 'Play')
         if not self.seek.isSliderDown(): self.seek.setValue(round(position / self.duration * 1000) if self.duration else 0)
         for widget, value in ((self.rate, replay.get('rate', 1)), (self.loop, replay.get('loop', True))):
             widget.blockSignals(True)
             if widget is self.rate: widget.setCurrentIndex(max(0, widget.findData(value)))
             else: widget.setChecked(value)
             widget.blockSignals(False)
-        phases = {'playing': ('Playing', '播放中'), 'paused': ('Paused', '已暂停'), 'manual': ('Manual controls', '手动控制'), 'ready': ('Ready · press Play', '已就绪 · 点击播放'),
-                  'ended': ('Finished', '已结束'), 'error': ('Unable to replay', '无法回放'), 'seeking-playing': ('Seeking', '定位中')}
+        phases = {'playing': ('Playing'), 'paused': ('Paused'), 'manual': ('Manual controls'), 'ready': ('Ready · press Play'),
+                  'ended': ('Finished'), 'error': ('Unable to replay'), 'seeking-playing': ('Seeking')}
         if live:
-            text = self.tr2(*phases.get(self.phase, ('Loading', '正在读取'))) + f'  ·  {position:.1f} / {self.duration:.1f} s'
+            text = phases.get(self.phase, 'Loading') + f'  ·  {position:.1f} / {self.duration:.1f} s'
             controls = replay.get('telemetry_sample', {})
             if controls:
                 text += f"  ·  {controls.get('gear', '')}  {controls.get('speed_kph', 0):.1f} km/h"
-                text += self.tr2('  ·  Steering ', '  ·  转向 ') + f"{controls.get('steering_deg', 0):.1f}°"
-                text += self.tr2('  ·  Accelerator ', '  ·  加速踏板 ') + f"{controls.get('throttle_pct', 0):.1f}%"
+                text += '  ·  Steering ' + f"{controls.get('steering_deg', 0):.1f}°"
+                text += '  ·  Accelerator ' + f"{controls.get('throttle_pct', 0):.1f}%"
             if replay.get('error'): text += '  ·  ' + replay['error']
             self.feedback.setText(text)
         else:
-            self.feedback.setText(self.tr2('Choose a dashcam recording with embedded telemetry.', '选择包含内嵌行驶数据的行车记录视频。'))
+            self.feedback.setText('Choose a dashcam recording with embedded telemetry.')
 
 
 class ServicesPanel(Panel):
@@ -169,13 +164,16 @@ class ServicesPanel(Panel):
         self.awaiting = {}
         self.live = False
         self.widgets, self.results = {}, {}
-        self.text('Set the local vehicle state, then apply your changes. Each field shows the firmware response.',
-                  '设置本地车辆状态后应用更改，每一项都会显示固件的响应。')
+        self.text('Changes apply as you make them. Each field shows the firmware response.')
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(300)
+        self.timer.timeout.connect(self.apply)
         self.tabs = QTabWidget()
         self.layout.addWidget(self.tabs)
         defaults = VehicleServices().as_dict()
-        for group, en, zh in (('climate', 'Climate', '空调'), ('closures', 'Doors', '车门'), ('lights', 'Lights', '灯光'),
-                               ('energy', 'Energy', '电量'), ('audio', 'Audio', '声音'), ('navigation', 'Navigation', '导航'), ('tires', 'Tires', '轮胎')):
+        for group, en in (('climate', 'Climate'), ('closures', 'Doors'), ('lights', 'Lights'),
+                               ('energy', 'Energy'), ('audio', 'Audio'), ('navigation', 'Navigation'), ('tires', 'Tires'), ('modes', 'Modes')):
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(20, 24, 20, 24)
@@ -186,7 +184,7 @@ class ServicesPanel(Panel):
                 if spec.get('choices'):
                     widget = QComboBox()
                     for index, choice in enumerate(spec['choices']):
-                        widget.addItem(spec['choices_zh'][index] if window.zh else choice, choice)
+                        widget.addItem(choice, choice)
                     widget.setCurrentIndex(widget.findData(value))
                     widget.currentIndexChanged.connect(lambda _, n=name: self.field_changed(n))
                 elif spec['type'] == 'bool':
@@ -195,15 +193,15 @@ class ServicesPanel(Panel):
                     widget.toggled.connect(lambda _, n=name: self.field_changed(n))
                 elif spec['type'] == 'str' or spec.get('nullable'):
                     widget = QLineEdit('' if value is None else str(value))
-                    widget.setPlaceholderText(self.tr2('Unset', '未设置'))
-                    widget.textEdited.connect(lambda _, n=name: self.dirty.add(n))
+                    widget.setPlaceholderText('Unset')
+                    widget.textEdited.connect(lambda _, n=name: self.touch(n))
                 else:
                     widget = QDoubleSpinBox()
                     widget.setRange(spec['min'], spec['max'])
                     widget.setDecimals(0 if spec['type'] == 'int' else 1)
                     widget.setValue(value)
-                    widget.valueChanged.connect(lambda _, n=name: self.dirty.add(n))
-                widget.setAccessibleName(spec['label_zh'] if window.zh else spec['label'])
+                    widget.valueChanged.connect(lambda _, n=name: self.touch(n))
+                widget.setAccessibleName(spec['label'])
                 self.widgets[name] = widget
                 row = QHBoxLayout()
                 row.addWidget(widget, 1)
@@ -211,25 +209,30 @@ class ServicesPanel(Panel):
                 result.setObjectName('muted')
                 row.addWidget(result)
                 self.results[name] = result
-                form.addRow(spec['label_zh'] if window.zh else spec['label'], row)
-            self.tabs.addTab(page, self.tr2(en, zh))
-        row = QHBoxLayout()
-        self.apply_button = window.button('Apply changes', '应用更改', self.apply, True)
-        row.addWidget(self.apply_button)
-        row.addStretch()
-        self.layout.addLayout(row)
-        self.feedback = self.text('', '', 'notice')
-        self.text('The local model covers climate, body indicators, energy, audio and trip data. Tire pressure remains a local value. Connected accounts, physical vehicle hardware and live traffic require their own services.',
-                  '本地模型包含空调、车身提示、电量、声音和行程数据。胎压目前保存在本地。账号、真实车辆硬件与实时路况需要对应服务。')
-        self.text('Service Mode', 'Service Mode', 'subtitle')
-        self.text('Keep Vehicle alarm armed off in the Doors tab. On the center display, open Controls → Software. Hold MODEL for two seconds, then enter service in the native access-code box. Use Exit Service Mode in the native menu to leave.',
-                  '在“车门”页保持“车辆报警已布防”关闭。在中控打开 Controls → Software，长按 MODEL 两秒，然后在原生输入框内输入 service。退出时使用原生菜单中的 Exit Service Mode。')
-        self.layout.addWidget(window.button('Show center display', '显示中控屏',
-                                            lambda: window.bridge.call('focus', '--display', 'center')))
+                form.addRow(spec['label'], row)
+            self.tabs.addTab(page, en)
+        spin = self.widgets['power_level']
+        spin.setSingleStep(1)
+        self.power_slider = QSlider(Qt.Horizontal)
+        self.power_slider.setRange(int(FIELD_SPECS['power_level']['min']), int(FIELD_SPECS['power_level']['max']))
+        self.power_slider.setAccessibleName(FIELD_SPECS['power_level']['label'])
+        self.power_slider.valueChanged.connect(spin.setValue)
+        self.feedback = self.text('', 'notice')
+        self.text('The local model covers climate, body indicators, energy, audio and trip data. Tire pressure remains a local value. Connected accounts, physical vehicle hardware and live traffic require their own services.')
         self.layout.addStretch()
 
+    def sync_power(self):
+        """Mirror the power_level field onto the Drive tab slider without re-sending it."""
+        self.power_slider.blockSignals(True)
+        self.power_slider.setValue(round(self.widgets['power_level'].value()))
+        self.power_slider.blockSignals(False)
+
+    def touch(self, name):
+        self.dirty.add(name)
+        self.timer.start()
+
     def apply(self):
-        if self.pending is not None:
+        if self.pending is not None or not self.live:
             return
         payload = {}
         try:
@@ -237,12 +240,11 @@ class ServicesPanel(Panel):
                 payload[name] = self.field_value(name)
             if payload and self.send('vehicle-services', **payload):
                 self.pending = payload
-                self.apply_button.setEnabled(False)
         except ValueError:
-            self.window.show_message(self.tr2('Enter a valid number for location and heading.', '请为位置与航向输入有效数字。'), True)
+            self.window.show_message('Enter a valid number for location and heading.', True)
 
     def field_changed(self, name):
-        self.dirty.add(name)
+        self.touch(name)
         if name not in ('headlights', 'exterior_light_mode', 'ambient_dark'):
             return
         mode = self.widgets['exterior_light_mode']
@@ -251,7 +253,7 @@ class ServicesPanel(Panel):
             mode.blockSignals(True)
             mode.setCurrentIndex(mode.findData('On' if headlight.isChecked() else 'Off'))
             mode.blockSignals(False)
-            self.dirty.add('exterior_light_mode')
+            self.touch('exterior_light_mode')
         else:
             enabled = mode.currentData() == 'On' or (mode.currentData() == 'Auto' and self.widgets['ambient_dark'].isChecked())
             headlight.blockSignals(True)
@@ -273,7 +275,7 @@ class ServicesPanel(Panel):
         if self.pending is not None and success:
             self.awaiting.update(self.pending)
         self.pending = None
-        self.apply_button.setEnabled(self.live)
+        if self.dirty - self.awaiting.keys(): self.timer.start()
 
     def export_draft(self):
         values = {name: widget.text() if isinstance(widget, QLineEdit) else self.field_value(name)
@@ -295,11 +297,11 @@ class ServicesPanel(Panel):
         self.pending = draft.get('pending')
         self.awaiting = dict(draft.get('awaiting', {}))
         self.tabs.setCurrentIndex(draft.get('tab', 0))
-        self.apply_button.setEnabled(self.live and self.pending is None)
+        self.sync_power()
 
     def update_status(self, session):
         live = self.live = session.get('phase') in ('running', 'degraded')
-        self.apply_button.setEnabled(live and self.pending is None)
+        if live and self.pending is None and self.dirty - self.awaiting.keys() and not self.timer.isActive(): self.timer.start()
         service = session.get('vehicle_services', {})
         state = service.get('state', {})
         firmware = service.get('firmware', {})
@@ -321,15 +323,16 @@ class ServicesPanel(Panel):
                 widget.blockSignals(False)
             result = center.get(name, 'pending')
             if isinstance(result, dict): result = result.get('status', 'pending')
-            states = {'accepted': ('Applied', '已应用'), 'partial': ('Partial', '部分应用'), 'unsupported': ('Local only', '仅本地'), 'local-model': ('Local only', '仅本地'), 'mismatch': ('Not applied', '未应用'), 'rejected': ('Not accepted', '未接收')}
-            self.results[name].setText(self.tr2(*states.get(result, ('—', '—'))) if live else '—')
+            states = {'accepted': ('Applied'), 'partial': ('Partial'), 'unsupported': ('Local only'), 'local-model': ('Local only'), 'mismatch': ('Not applied'), 'rejected': ('Not accepted')}
+            self.results[name].setText(states.get(result, '—') if live else '—')
+        self.sync_power()
         link = session.get('display_link', {})
         connected = link.get('connected', {})
         synced = live and connected.get('center') and connected.get('cluster')
         if synced:
-            self.feedback.setText(self.tr2('Center ↔ Instruments', '中控 ↔ 仪表') + '  ·  ' + str(link.get('synchronized_count', 0)) + self.tr2(' shared fields synchronized', ' 项数据已同步'))
+            self.feedback.setText('Center ↔ Instruments' + '  ·  ' + str(link.get('synchronized_count', 0)) + ' shared fields synchronized')
         else:
-            self.feedback.setText(self.tr2('Waiting for both displays to synchronize.', '等待两块屏幕完成同步。') if live else self.tr2('Start a device to use vehicle services.', '启动设备后即可使用车辆服务。'))
+            self.feedback.setText('Waiting for both displays to synchronize.' if live else 'Start a device to use vehicle services.')
 
 
 class CanPanel(Panel):
@@ -340,65 +343,64 @@ class CanPanel(Panel):
     value, not a vehicle credential.
     """
 
-    CHANNELS = (('veh', 'VEH · vehicle', 'VEH · 车身'), ('ch', 'CHASSIS', 'CHASSIS · 底盘'),
-                ('party', 'PARTY · diagnostic', 'PARTY · 诊断'))
+    CHANNELS = (('veh', 'VEH · vehicle'), ('ch', 'CHASSIS'),
+                ('party', 'PARTY · diagnostic'))
 
     def __init__(self, window):
         super().__init__(window)
         self.since = 0
         self.awaiting_unlock = False
-        self.text('CAN bus and gateway', 'CAN 总线与网关', 'subtitle')
+        self.text('CAN bus and gateway', 'subtitle')
         self.text('An emulated gateway routes frames between the local channels and the infotainment Ethernet side. '
-                  'Definitions and identifiers are this lab’s own; a decoded value is not evidence about a vehicle.',
-                  '模拟网关在本地各通道与车机以太网侧之间转发报文。报文定义与标识符均由本项目自行编写，解码结果不代表真实车辆行为。')
+                  'Definitions and identifiers are this lab’s own; a decoded value is not evidence about a vehicle.')
         row = QHBoxLayout()
         self.backend_box = QComboBox()
-        for key, en, zh in (('auto', 'Automatic transport', '自动选择传输'),
-                            ('socketcan', 'SocketCAN (vcan)', 'SocketCAN (vcan)'),
-                            ('software', 'Software hub', '软件总线')):
-            self.backend_box.addItem(self.tr2(en, zh), key)
-        self.backend_box.setAccessibleName(self.tr2('CAN transport', 'CAN 传输方式'))
+        for key, en in (('auto', 'Automatic transport'),
+                            ('socketcan', 'SocketCAN (vcan)'),
+                            ('software', 'Software hub')):
+            self.backend_box.addItem(en, key)
+        self.backend_box.setAccessibleName('CAN transport')
         row.addWidget(self.backend_box)
-        row.addWidget(window.button('Start service', '启动服务', self.start_service))
-        row.addWidget(window.button('Refresh', '刷新', self.refresh))
+        row.addWidget(window.button('Start service', self.start_service))
+        row.addWidget(window.button('Refresh', self.refresh))
         self.layout.addLayout(row)
 
         unlock_row = QHBoxLayout()
         self.secret = QLineEdit('infotainment-lab')
-        self.secret.setAccessibleName(self.tr2('Gateway lab secret', '网关实验密钥'))
-        self.secret.setPlaceholderText(self.tr2('Gateway lab secret', '网关实验密钥'))
+        self.secret.setAccessibleName('Gateway lab secret')
+        self.secret.setPlaceholderText('Gateway lab secret')
         unlock_row.addWidget(self.secret, 1)
-        unlock_row.addWidget(window.button('Unlock gateway', '解锁网关', self.unlock))
-        unlock_row.addWidget(window.button('Lock', '锁定', lambda: self.request({'action': 'lock'})))
+        unlock_row.addWidget(window.button('Unlock gateway', self.unlock))
+        unlock_row.addWidget(window.button('Lock', lambda: self.request({'action': 'lock'})))
         self.layout.addLayout(unlock_row)
-        self.state = self.text('Start the service to see the channels.', '启动服务后显示通道状态。', 'notice')
+        self.state = self.text('Start the service to see the channels.', 'notice')
 
         send_row = QHBoxLayout()
         self.channel = QComboBox()
-        for key, en, zh in self.CHANNELS:
-            self.channel.addItem(self.tr2(en, zh), key)
-        self.channel.setAccessibleName(self.tr2('Channel', '通道'))
+        for key, en in self.CHANNELS:
+            self.channel.addItem(en, key)
+        self.channel.setAccessibleName('Channel')
         send_row.addWidget(self.channel)
         self.identifier = QLineEdit()
-        self.identifier.setPlaceholderText(self.tr2('Identifier, for example 0x2E5', '标识符，例如 0x2E5'))
-        self.identifier.setAccessibleName(self.tr2('Frame identifier', '报文标识符'))
+        self.identifier.setPlaceholderText('Identifier, for example 0x2E5')
+        self.identifier.setAccessibleName('Frame identifier')
         send_row.addWidget(self.identifier)
         self.payload = QLineEdit()
-        self.payload.setPlaceholderText(self.tr2('Payload bytes, for example 21 04 00', '数据字节，例如 21 04 00'))
-        self.payload.setAccessibleName(self.tr2('Frame payload', '报文数据'))
+        self.payload.setPlaceholderText('Payload bytes, for example 21 04 00')
+        self.payload.setAccessibleName('Frame payload')
         send_row.addWidget(self.payload, 1)
         self.origin = QComboBox()
-        for key, en, zh in (('ethernet', 'Through the gateway', '经由网关'), ('bus', 'Inject on the channel', '直接注入通道')):
-            self.origin.addItem(self.tr2(en, zh), key)
-        self.origin.setAccessibleName(self.tr2('Write path', '写入路径'))
+        for key, en in (('ethernet', 'Through the gateway'), ('bus', 'Inject on the channel')):
+            self.origin.addItem(en, key)
+        self.origin.setAccessibleName('Write path')
         send_row.addWidget(self.origin)
-        send_row.addWidget(window.button('Send frame', '发送报文', self.send_frame))
+        send_row.addWidget(window.button('Send frame', self.send_frame))
         self.layout.addLayout(send_row)
-        self.result = self.text('', '', 'notice')
+        self.result = self.text('', 'notice')
 
         self.trace = QLineEdit()
         self.trace.setReadOnly(True)
-        self.trace.setAccessibleName(self.tr2('Last decoded frame', '最近解码报文'))
+        self.trace.setAccessibleName('Last decoded frame')
         self.layout.addWidget(self.trace)
         self.frames = QLabel('')
         self.frames.setObjectName('muted')
@@ -425,7 +427,7 @@ class CanPanel(Panel):
     def send_frame(self):
         identifier = self.identifier.text().strip()
         if not identifier:
-            self.result.setText(self.tr2('Enter an identifier first.', '请先填写标识符。'))
+            self.result.setText('Enter an identifier first.')
             return
         self.request({'action': 'send', 'origin': self.origin.currentData(),
                       'frame': {'channel': self.channel.currentData(), 'id': identifier,
@@ -454,35 +456,35 @@ class CanPanel(Panel):
             return
         if 'allowed' in data:
             reason = data.get('reason') or ''
-            self.result.setText(self.tr2('Routed through ', '已通过 ') + str(data.get('route'))
-                                if data['allowed'] else self.tr2('Refused: ', '已拒绝：') + reason)
+            self.result.setText('Routed through ' + str(data.get('route'))
+                                if data['allowed'] else 'Refused: ' + reason)
             return
         if 'unlocked' in data and 'gateway' not in data:
-            self.result.setText(self.tr2('Gateway unlocked for this session.', '网关已在本次会话中解锁。')
-                                if data['unlocked'] else self.tr2('Gateway locked.', '网关已锁定。'))
+            self.result.setText('Gateway unlocked for this session.'
+                                if data['unlocked'] else 'Gateway locked.')
             return
         self.render_status(data)
 
     def render_status(self, data):
         if data.get('service') != 'running':
-            self.state.setText(self.tr2('The CAN service is stopped.', 'CAN 服务未运行。'))
+            self.state.setText('The CAN service is stopped.')
             return
         gateway = data.get('gateway', {})
         counters = gateway.get('counters', {})
         channels = ', '.join(f"{item['channel']}:{item['received']}" for item in gateway.get('channels', []))
         if 'follow_session' not in data:
-            source = self.tr2('older service running · restart it', '服务版本较旧 · 请重启')
+            source = 'older service running · restart it'
         elif data.get('follow_session'):
-            source = self.tr2('following the session', '跟随会话状态')
+            source = 'following the session'
         else:
-            source = self.tr2('panel state only', '仅面板状态')
+            source = 'panel state only'
         self.state.setText(' · '.join(filter(None, (
-            self.tr2('Transport: ', '传输：') + str(gateway.get('backend')),
+            'Transport: ' + str(gateway.get('backend')),
             source,
-            self.tr2('Unlocked', '已解锁') if gateway.get('unlocked') else self.tr2('Locked', '已锁定'),
+            'Unlocked' if gateway.get('unlocked') else 'Locked',
             channels,
-            self.tr2('routed ', '已转发 ') + str(counters.get('routed', 0)),
-            self.tr2('blocked ', '已拦截 ') + str(counters.get('blocked', 0) + counters.get('unknown', 0))))))
+            'routed ' + str(counters.get('routed', 0)),
+            'blocked ' + str(counters.get('blocked', 0) + counters.get('unknown', 0))))))
 
     def render_frames(self, frames):
         if not frames:
@@ -495,3 +497,213 @@ class CanPanel(Panel):
                          f"{item.get('name', '')} {summary}")
         self.frames.setText('\n'.join(lines))
         self.trace.setText(lines[-1].strip())
+
+
+# The CID is the read-only firmware root the session runs from ($R). Enter it through a user
+# namespace (no root needed); fall back to a shell in that directory if namespaces are blocked.
+CID_ENTER = r'''
+export PS1='[cid] \w # ' TERM=dumb
+if unshare --user --map-root-user --mount true 2>/dev/null; then
+  echo "Inside the CID firmware root (read-only)."
+  exec unshare --user --map-root-user --mount sh -c 'R=$1; for d in dev proc sys tmp run; do mount --rbind "/$d" "$R/$d" 2>/dev/null; done; exec chroot "$R" /bin/bash -i' sh "$R"
+fi
+echo "User namespaces are unavailable; opening a shell in the CID firmware root instead of chrooting."
+cd "$R" && exec bash -i
+'''
+
+# Native engine: the firmware root comes from the running session's config.
+CID_SHELL = r'''
+c="${XDG_DATA_HOME:-$HOME/.local/share}/tsla-infotainment-lab/session/config.json"
+R=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['firmware'])" "$c" 2>/dev/null)
+if [ -z "$R" ] || [ ! -d "$R/usr" ] || ! systemctl --user is-active --quiet tsla-infotainment-lab.service 2>/dev/null; then
+  echo "The CID is not running. Start it from the Devices page, then connect again."; exit 1
+fi
+''' + CID_ENTER
+
+# QEMU engine: run over SSH in the guest, where the image is mounted at /firmware. Without it the
+# guest's own shell is the only useful place left, so open that instead of disconnecting.
+GUEST_CID_SHELL = r'''
+R=/firmware
+if [ ! -d "$R/usr" ]; then
+  echo "The firmware image is not mounted at /firmware in the guest; opening the guest shell instead."; exec bash -i
+fi
+''' + CID_ENTER
+
+
+class TerminalView(QPlainTextEdit):
+    """Read-only text view that forwards every keystroke, including Tab, to the shell."""
+
+    typed = Signal(bytes)
+    KEYS = {Qt.Key_Return: b'\r', Qt.Key_Enter: b'\r', Qt.Key_Backspace: b'\x7f', Qt.Key_Tab: b'\t',
+            Qt.Key_Escape: b'\x1b', Qt.Key_Up: b'\x1b[A', Qt.Key_Down: b'\x1b[B', Qt.Key_Right: b'\x1b[C',
+            Qt.Key_Left: b'\x1b[D', Qt.Key_Home: b'\x1b[H', Qt.Key_End: b'\x1b[F', Qt.Key_Delete: b'\x1b[3~'}
+
+    def focusNextPrevChild(self, next):
+        return False  # keep Tab for shell completion instead of moving focus
+
+    def keyPressEvent(self, event):
+        modifiers = event.modifiers()
+        if modifiers & Qt.ControlModifier and modifiers & Qt.ShiftModifier:
+            if event.key() == Qt.Key_C: self.copy()
+            elif event.key() == Qt.Key_V: self.typed.emit(QApplication.clipboard().text().encode())
+            return
+        if modifiers & Qt.ControlModifier and Qt.Key_A <= event.key() <= Qt.Key_Z:
+            self.typed.emit(bytes([event.key() - Qt.Key_A + 1]))
+        elif event.key() in self.KEYS:
+            self.typed.emit(self.KEYS[event.key()])
+        elif event.text() and not modifiers & Qt.ControlModifier:
+            self.typed.emit(event.text().encode())
+
+
+# Runs the command on a pseudo-terminal so completion, prompts and Ctrl+C behave like a real shell.
+PTY = 'import pty,sys;pty.spawn(sys.argv[1:])'
+
+
+class ConsolePanel(Panel):
+    """A shell in the CID: inside the firmware root on the native engine, over SSH on the QEMU engine."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.process = None
+        self.rows, self.col = [''], 0
+        self.escape = ''
+        self.text('Console', 'subtitle')
+        self.text('Both engines open a shell inside the running CID’s read-only firmware root. '
+                  'QEMU virtual machine: reaches it over SSH on 127.0.0.1 with a key this lab creates for it '
+                  '(set up on first Connect; an older guest image needs a rebuild to include the SSH server). '
+                  'Native Linux / WSL: no SSH needed.')
+        row = QHBoxLayout()
+        self.connect_button = window.button('Connect', self.toggle, True)
+        row.addWidget(self.connect_button)
+        self.key_button = window.button('Set up SSH key', lambda: self.setup_key(False))
+        row.addWidget(self.key_button)
+        row.addStretch()
+        self.key_ready = False
+        self.connect_after_key = False
+        self.layout.addLayout(row)
+        self.output = TerminalView()
+        self.output.setReadOnly(True)
+        self.output.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)  # shows the caret
+        self.output.setOverwriteMode(True)  # block caret, like a terminal
+        self.output.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.output.setMinimumHeight(360)
+        self.output.setStyleSheet('font-family: monospace;')
+        self.output.setAccessibleName('Console')
+        self.output.typed.connect(self.send_bytes)
+        self.layout.addWidget(self.output, 1)
+
+    def show_text(self, text):
+        self.rows, self.col, self.escape = text.split('\n'), 0, ''
+        self.render()
+
+    def render(self):
+        del self.rows[:-2000]
+        self.output.setPlainText('\n'.join(self.rows))
+        cursor = self.output.textCursor()
+        cursor.setPosition(self.output.document().lastBlock().position() + min(self.col, len(self.rows[-1])))
+        self.output.setTextCursor(cursor)
+
+    def feed(self, data):
+        """Apply shell output to a simple screen: carriage return, backspace and line-erase are honoured."""
+        for char in data:
+            if self.escape:
+                self.escape += char
+                if self.escape[1:2] == ']':  # title sequence, ends at BEL
+                    if char == '\x07': self.escape = ''
+                elif self.escape[1:2] != '[' or char.isalpha() or char == '~':
+                    if self.escape[1:2] == '[': self.csi(self.escape[2:-1], char)
+                    self.escape = ''
+                continue
+            row = self.rows[-1]
+            if char == '\x1b': self.escape = char
+            elif char == '\n':
+                self.rows.append('')
+                self.col = 0
+            elif char == '\r': self.col = 0
+            elif char == '\b': self.col = max(0, self.col - 1)
+            elif char >= ' ':
+                self.rows[-1] = row[:self.col].ljust(self.col) + char + row[self.col + 1:]
+                self.col += 1
+        self.render()
+
+    def csi(self, argument, final):
+        count = int(re.sub(r'\D', '', argument) or 1)
+        row = self.rows[-1]
+        if final == 'K': self.rows[-1] = row[:self.col]
+        elif final == 'C': self.col += count
+        elif final == 'D': self.col = max(0, self.col - count)
+        elif final == 'P': self.rows[-1] = row[:self.col] + row[self.col + count:]
+        elif final == 'G': self.col = max(0, count - 1)
+
+    def setup_key(self, then_connect):
+        """Create this lab's own key if needed and authorize it in the running guest."""
+        if self.window.bridge.engine != 'qemu':
+            self.show_text('The native engine needs no SSH key; Connect opens the shell directly.')
+            return
+        self.connect_after_key = then_connect
+        if not self.window.bridge.call('ssh-key'):
+            return
+        self.key_button.setEnabled(False)
+        self.connect_button.setEnabled(False)
+        self.show_text('Installing SSH key in the CID…')
+
+    def key_result(self, result):
+        self.key_button.setEnabled(True)
+        self.connect_button.setEnabled(True)
+        if not result.get('ok'):
+            self.show_text(result.get('error', 'Unknown error'))
+            return
+        self.key_ready = True
+        self.show_text('SSH key installed.')
+        self.window.show_message('SSH key installed in the CID. Connect now opens a shell without a password.')
+        if self.connect_after_key:
+            self.toggle()
+
+    def toggle(self):
+        if self.process is not None:
+            self.disconnect_now()
+            return
+        native = self.window.bridge.engine != 'qemu'
+        if not native and not self.key_ready:
+            self.setup_key(True)
+            return
+        from .qemu_virtual import SSH_PORT
+        self.process = QProcess(self)
+        self.process.setProcessChannelMode(QProcess.MergedChannels)
+        self.process.readyRead.connect(self.read)
+        self.process.finished.connect(self.closed)
+        self.process.errorOccurred.connect(lambda error: error == QProcess.FailedToStart and self.closed())
+        # Run ssh where the guest's forwarded port lives: inside WSL when this UI runs on Windows.
+        script = ('export TERM=dumb; exec ssh -t -p %d -i "${XDG_DATA_HOME:-$HOME/.local/share}/tsla-infotainment-lab/ssh/id_ed25519" '
+                  '-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '
+                  '-o LogLevel=ERROR lab@127.0.0.1 %s' % (SSH_PORT, shlex.quote(GUEST_CID_SHELL)))
+        argv = ['python3', '-c', PTY, 'sh', '-c', 'stty cols 120 rows 32 2>/dev/null; ' + (CID_SHELL if native else script)]
+        if os.name == 'nt':
+            argv = ['wsl.exe', '-d', self.window.bridge.distro, '--', *argv]
+        self.show_text('')
+        self.process.start(argv[0], argv[1:])
+        self.connect_button.setText('Disconnect')
+        self.output.setFocus()
+
+    def send_bytes(self, data):
+        if self.process is not None:
+            self.process.write(data)
+
+    def read(self):
+        self.feed(bytes(self.process.readAll()).decode('utf-8', 'replace'))
+
+    def disconnect_now(self):
+        """Reset the UI at once. SIGKILL, not SIGTERM: an interactive shell ignores the latter."""
+        process, self.process = self.process, None
+        process.readyRead.disconnect()
+        process.finished.disconnect()
+        process.finished.connect(process.deleteLater)
+        process.kill()
+        self.closed()
+
+    def closed(self, *_):
+        if self.process is not None:
+            self.process.deleteLater()
+        self.process = None
+        self.connect_button.setText('Connect')
+        self.feed('\n' + '[disconnected]' + '\n')

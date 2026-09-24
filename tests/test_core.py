@@ -39,10 +39,10 @@ def test_import_does_not_trust_extension(tmp_path):
 
 
 def test_atomic_write_preserves_unicode_and_leaves_no_temp_files(tmp_path):
-    dest = tmp_path / '含 空格' / 'state.json'
-    atomic_json(dest, {'state': '准备就绪'})
-    atomic_json(dest, {'state': '运行中'})
-    assert load_json(dest)['state'] == '运行中'
+    dest = tmp_path / 'with space' / 'state.json'
+    atomic_json(dest, {'state': 'ready'})
+    atomic_json(dest, {'state': 'running'})
+    assert load_json(dest)['state'] == 'running'
     assert list(dest.parent.iterdir()) == [dest]
 
 

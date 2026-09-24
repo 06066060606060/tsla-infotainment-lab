@@ -8,12 +8,15 @@ desktop controls as well.
 
 The model is a desktop simulation. It does not communicate with a vehicle.
 
+Car-config values from a vehicle dump are handled on the separate
+[Vehicle config](vehicle-config.md) page.
+
 | Domain | Local behavior | Practical limit |
 | --- | --- | --- |
 | Climate | Power, driver/passenger set points, cabin/outside temperature, fan, A/C and rear defrost request | Temperatures are supplied values; no thermal physics or compressor is running. |
 | Closures | Individual positions for all four doors and both trunks, native Open/Lock/Unlock requests, and shared lock status | Native instrument 3D opening/closing is verified. Physical latches and powered-actuator timing are not modeled. |
 | Lights | Off, Parking, On and Auto, headlight/high-beam and parking-light indicators | Auto uses the local Dark outside input. No physical lamps are controlled. |
-| Energy | Battery percentage, charging state, power and charge limit | Charging does not increment the battery automatically. |
+| Energy | Battery percentage, charging state (session flags, `GTW_chargeState` `Charging`/`Disconnected`, charge-port cover and latch), charging power and charge limit | Charging does not increment the battery automatically. `GTW_chargeState` `Charging` is not yet observed on a running UI. |
 | Audio | Volume and mute synchronize across the two displays and firmware audio streams | Only audio streams whose executable belongs to the mounted firmware are changed. |
 | Navigation | Supplied GPS, heading, destination label, remaining distance and time; street base map observed after valid replay GPS | Offline NA imagery, route computation and live traffic remain unverified. |
 | Tire pressures | Four editable pressure values in the local model | Native TPMS units have not been verified, so these values are not injected into native TPMS fields. |
@@ -50,8 +53,9 @@ Auto, Dark outside determines whether the headlights and parking lights are on.
 
 ## Service Mode
 
-The desktop Services page includes the normal touchscreen entry instructions
-and a button to focus the center display. The local model publishes
+The desktop Services page applies edits as they are made; there is no Apply
+button. Its Modes tab has switches for Developer mode (`GUI_developerMode`),
+Service mode (`GUI_serviceMode`) and Factory mode (`GUI_factoryMode`). The local model publishes
 `VAPI_alarmStatus=Disarmed` by default because an invalid alarm state causes the
 native access-code dialog to reject entry. The Doors page can select Armed for
 alarm-state UI testing. Both values remain inside this application's private
@@ -63,6 +67,50 @@ in the native prompt; exit through the native Exit Service Mode control. Enter
 and exit state is center-owned and forwarded to the instrument display. This is
 the touchscreen procedure in
 [Tesla's Model S service manual](https://service.tesla.com/docs/ModelS/ServiceManual/en-au/air/GUID-0DC534D7-A4B8-417F-8E42-DF1560E970C2.html).
+
+The Service card is the firmware's own web panel. QtCar embeds a Chromium
+window titled `ChromiumOdin` that loads `http://localhost:8000`, served by the
+firmware backend `/opt/odin/service-ui` (the vehicle's `chromium-odin` and
+`service-ui` services). When Browser support is enabled and port 8000 is free,
+the lab starts both from the mounted image with the vehicle's window, D-Bus and
+policy settings. The backend aborts unless it can bind the center's
+vehicle-network address `192.168.90.100`. Rather than add that address to the
+host, where it would capture traffic for a real 192.168.90.x network, the lab
+runs the backend in its own network namespace (`unshare --map-current-user
+--keep-caps -n`, no root, as the desktop user and without capabilities) and
+relays `127.0.0.1:8000` to it through `session/service-ui.sock`
+(`runtime/service-ui-netns.py`). It reads vehicle values from the firmware's
+data-value server, `QtCarDvServer`, which the lab starts under its firmware
+peer name with a private `/tmp/dbus_dvaccess` directory. The backend keeps its own token,
+factory-gated and identity checks; the lab supplies no credentials and no
+CAN-over-Ethernet link, so functions that need them report their own
+unavailable state.
+
+The vehicle's Odin diagnostic engine is replaced by a stand-in,
+`runtime/odin-engine.py`. The backend reaches the engine two ways: D-Bus calls to
+`com.tesla.Odin` `/Odin` on the session bus (`GetRunningTasks`,
+`ServiceUIListTask`, `ServiceUIExecute`) and a websocket on `127.0.0.1:8080`
+inside its namespace (`list_configs`, `read_service_history`,
+`read_maintenance_history_options`), which the namespace wrapper relays to
+`session/odin-engine.sock`. Results go back over that websocket as
+`request_finished` messages. The stand-in answers from the image: the task
+catalogue (`odin_bundle/.../task_data.py`), gateway-config names from the
+engine's allowlist with placeholder, read-only values, and the localized
+maintenance options. The service history is empty. Every task run, and every
+other engine command, finishes with exit code 2 ("Routine Error") and the
+message that no vehicle is attached. It runs no diagnostics, reaches no ECU and
+performs no authentication or security access.
+
+None of these processes marks the session degraded when it exits; see
+`dv-server.log`, `odin-engine.log`, `service-ui.log`, `service-ui-relay.log` and
+`chromium-odin.log`.
+
+Verified on the MCU2 center display: the native Service Mode panel renders its
+Vehicle Info, Tools, Driver Assist, Infotainment, High Voltage, Low Voltage and
+Thermal sections. VIN, odometer and firmware fields stay empty, the CAN Viewer
+is locked, and alerts are unavailable. The Odin engine protocol was verified
+against the firmware `service-ui` binary: the task catalogue, configs, maintenance
+options, service history and the no-vehicle task result reach the page.
 
 This fixes the native UI precondition without changing its access-code or
 authentication logic. The red `NO GATEWAY SYSTEM / GTW LOCKED` status is expected:
@@ -84,6 +132,20 @@ no control bus calls; periodic verification detects overwritten values and
 display restarts. Host Internet and disk measurements run separately every
 30 seconds. The control feedback records the target tick and measured apply
 duration so a slow desktop can be diagnosed without assuming a fixed frame rate.
+
+## Power meter and Car off
+
+The Drive tab's power meter writes `VAPI_powerLevel` in kW, from -100 (regen) to
++400 (drive) in 1 kW steps; `VehicleServices.parse` rejects values outside that range.
+The kW unit is inferred from the firmware, not yet verified on a running UI.
+
+**Car off** is not Park. It shifts to Park, zeroes speed and accelerator, and
+sets the power rails, `VAPI_driverPresent`, `VAPI_vehicleInAccessoryPlus`,
+`GUI_enableDisplayKeepAlive`, `VAPI_icLCDOn` and `VAPI_icBacklightOn` to off, so
+the firmware can sleep its screens. `keep-awake.py` no longer forces the last
+three on. Selecting a gear turns the car back on. The Drive feedback line reports
+the firmware's answer for these values as Power. Enum values were read from the
+firmware libraries and have not yet been observed on a running UI.
 
 ## Two-display preferences
 
@@ -140,22 +202,3 @@ Absent fields are queried once per display process, then cached until that
 display restarts. This avoids repeatedly adding unsupported-field messages to
 the firmware logs.
 
-## 中文说明
-
-“车辆服务”页面向中控和仪表提供同一份本地模拟数据，包括空调、车门提示、
-灯光、电量、充电、音量和导航元数据。在固件内调整空调温度或音量，也会更新
-桌面控制面板。两屏的单位、音量、时区等可用偏好双向同步；同时发生冲突时，
-以中控为准，并记录冲突。
-
-源码更新增加 Santa 开关、相关主题与方向盘偏好同步。播放曲目、进度和状态由
-中控单向传给仪表，清空内容也会同步。方向盘按钮调用原生媒体和仪表面板接口；
-连续音量按键会保留尚未回报的最新输入。
-
-“已接收”表示固件本地数据接口回读了写入值，不等于接通真实硬件服务。
-车门目前提供打开提示和锁定状态，逐门 3D 锁扣动画仍未验证；胎压目前仅保存在
-本地模型中。地图路线计算、实时路况、真实 ECU/CAN、账户、手机钥匙、蜂窝开通、
-支付和云服务不在此本地模拟中运行。
-
-行车记录仪回放按实际解码的视频帧同步位置、航向及驾驶控制数据。回放暂停、
-跳转和手动接管会改变数据来源；录制的辅助驾驶状态只作为元数据显示，不启动
-辅助驾驶控制器。

@@ -6,4 +6,4 @@ Use Python 3.11+ and the pinned development dependencies in `pyproject.toml`. Ru
 
 New compatibility profiles need exact version/variant identification, executable build IDs, a clear explanation of the adaptation, and a validation record covering startup, shutdown, input, graphics and browser behavior. Filename conventions and a process staying alive are not sufficient evidence of support. Keep incomplete features visibly marked.
 
-Keep user-facing English and Mandarin text together, write readable error messages with an actionable next step, and use structured subprocess arguments. Changes to privileged setup, filesystem ownership, exported diagnostics, or process cleanup need focused tests and a description of their boundaries.
+Keep all code, comments, docs and user-facing text in English, write readable error messages with an actionable next step, and use structured subprocess arguments. Changes to privileged setup, filesystem ownership, exported diagnostics, or process cleanup need focused tests and a description of their boundaries.

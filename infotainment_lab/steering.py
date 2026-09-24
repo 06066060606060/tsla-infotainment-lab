@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 ACTIONS = {
-    'volume_up': ('Volume +', '音量 +', 'left'),
-    'volume_down': ('Volume −', '音量 −', 'left'),
-    'play': ('Play', '播放', 'left'),
-    'pause': ('Pause', '暂停', 'left'),
-    'previous': ('Previous', '上一首', 'left'),
-    'next': ('Next', '下一首', 'left'),
-    'mute': ('Mute / unmute', '静音 / 恢复', 'left'),
-    'volume_popup': ('Volume card', '音量卡片', 'right'),
-    'wiper_popup': ('Wiper card', '雨刷卡片', 'right'),
-    'voice_popup': ('Voice panel', '语音界面', 'right'),
+    'volume_up': ('Volume +', 'left'),
+    'volume_down': ('Volume −', 'left'),
+    'play': ('Play', 'left'),
+    'pause': ('Pause', 'left'),
+    'previous': ('Previous', 'left'),
+    'next': ('Next', 'left'),
+    'mute': ('Mute / unmute', 'left'),
+    'volume_popup': ('Volume card', 'right'),
+    'wiper_popup': ('Wiper card', 'right'),
+    'voice_popup': ('Voice panel', 'right'),
 }
 
 

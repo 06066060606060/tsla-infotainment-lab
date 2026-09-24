@@ -18,7 +18,7 @@ PACKAGES = ('systemd-sysv systemd-resolved dracut udev dbus dbus-x11 xserver-xor
             'xinit xauth mesa-utils libgl1-mesa-dri libegl1 libglx-mesa0 libopengl0 '
             'pulseaudio pulseaudio-utils alsa-utils libasound2-plugins '
             'iproute2 iputils-ping curl ca-certificates python3 python3-dbus python3-gi python3-pil '
-            'qemu-guest-agent procps x11-xserver-utils x11-utils fonts-noto-cjk '
+            'qemu-guest-agent openssh-server procps x11-xserver-utils x11-utils '
             'gcc libc6-dev binutils libx11-dev xserver-xephyr xdotool libnss3 libgbm1 libatk-bridge2.0-0t64 '
             'libxkbcommon-x11-0 libxcb-cursor0 ffmpeg apparmor apparmor-utils '
             'gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-plugins-base gstreamer1.0-plugins-good '
@@ -170,6 +170,7 @@ def finish_image(directory, owner):
     run('chroot', root, 'groupadd', '--system', 'dvshm')
     run('chroot', root, 'useradd', '-m', '-u', '1000', '-s', '/bin/bash',
         '-G', 'audio,video,render,input,dvaccess,dvshm', 'lab')
+    write('etc/ssh/sshd_config.d/10-lab.conf', 'PasswordAuthentication no\nPermitRootLogin no\n')
     shutil.copytree(REPO / 'infotainment_lab', root / 'opt/infotainment-lab',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.so'))
     shutil.copyfile(REPO / 'infotainment_lab/runtime/media-apparmor.profile',
@@ -204,7 +205,7 @@ StandardInput=tty
 [Install]
 WantedBy=multi-user.target
 ''')
-    run('chroot', root, 'systemctl', 'enable', 'lab-desktop', 'qemu-guest-agent', 'systemd-networkd', 'systemd-resolved')
+    run('chroot', root, 'systemctl', 'enable', 'lab-desktop', 'qemu-guest-agent', 'ssh', 'systemd-networkd', 'systemd-resolved')
     disk = directory / 'desktop.raw'
     with disk.open('xb') as stream:
         stream.truncate(16 * 1024**3)
@@ -214,7 +215,7 @@ WantedBy=multi-user.target
         os.chown(directory / name, owner.pw_uid, owner.pw_gid)
     (directory / 'build.json').write_text(json.dumps({'kernel': version, 'mode': 'virtual-hardware',
         'firmware_included': False, 'packages': PACKAGES, 'virtualgl': VGL_VERSION,
-        'full_firmware_verified': False}, indent=2))
+        'full_firmware_verified': False, 'display_scale': True}, indent=2))
     for p in (directory, disk, directory / 'build.json'):
         os.chown(p, owner.pw_uid, owner.pw_gid)
     print('Guest files prepared in', directory)

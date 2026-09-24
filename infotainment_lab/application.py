@@ -25,7 +25,8 @@ from .presentation import icon, readiness
 from .workspace import build_workspace
 from .simulation import Simulation
 from .desktop_instance import DesktopInstance
-from .lab_panels import BrowserPanel, CanPanel, ReplayPanel, ServicesPanel
+from .lab_panels import BrowserPanel, CanPanel, ConsolePanel, ReplayPanel, ServicesPanel
+from .config_panel import ConfigPanel
 from .steering import ACTIONS as STEERING_ACTIONS
 from .hold_button import HoldButton
 
@@ -33,6 +34,9 @@ from .theme import apply_theme, current_colors, state, stylesheet, colors
 
 # Compatibility for external launchers that import the default stylesheet.
 STYLE = stylesheet(colors())
+
+MAX_ALERTS = 100
+ALERT_NAMES = 12  # names shown per alert; the full list is in its tooltip
 
 
 def label(text, style=None, wrap=False):
@@ -89,7 +93,6 @@ class MainWindow(QMainWindow):
     def __init__(self, initial_files=None, settings=None):
         super().__init__()
         self.settings = settings if settings is not None else QSettings("InfotainmentLab", "Desktop")
-        self.zh = self.settings.value("language", "en") == "zh"
         self.bridge = Bridge(str(self.settings.value("distro", "Debian")), self)
         self.bridge.configure(str(self.settings.value('engine', 'native')),
                               str(self.settings.value('vm_directory', '')))
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self.busy = False
         self.active_action = None
         self.notification = None
+        self.alerts = []
         self.loading_options = False
         self.loaded_device_id = None
         self.current_page = 0
@@ -133,11 +137,8 @@ class MainWindow(QMainWindow):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.activated.connect(callback)
 
-    def tr2(self, en, zh):
-        return zh if self.zh else en
-
-    def button(self, en, zh, callback, primary=False):
-        button = QPushButton(self.tr2(en, zh).replace('&', '&&'))
+    def button(self, en, callback, primary=False):
+        button = QPushButton(en.replace('&', '&&'))
         if primary: button.setObjectName("primary")
         button.clicked.connect(callback)
         return button
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
     def rebuild(self):
         browser_draft = self.browser_panel.export_draft() if hasattr(self, 'browser_panel') else None
         services_draft = self.services_panel.export_draft() if hasattr(self, 'services_panel') else None
+        config_draft = self.config_panel.export_draft() if hasattr(self, 'config_panel') else None
         root = QWidget()
         outer = QHBoxLayout(root)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -163,15 +165,16 @@ class MainWindow(QMainWindow):
             self.nav_group.deleteLater()
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        for index, en, zh, symbol in ((0, 'Devices', '设备', 'devices'), (1, 'Controls', '车辆控制', 'controls'),
-                                       (2, 'Camera & replay', '摄像头与回放', 'camera'), (5, 'Browsers', '浏览器', 'screen'),
-                                       (6, 'Vehicle services', '车辆服务', 'settings'), (7, 'CAN & gateway', 'CAN 与网关', 'controls'), (3, 'Diagnostics', '诊断', 'settings'), (4, 'About', '关于项目', 'help')):
+        for index, en, symbol in ((0, 'Devices', 'devices'), (1, 'Controls', 'controls'),
+                                  (2, 'Camera & replay', 'camera'), (5, 'Browsers', 'screen'),
+                                  (6, 'CAN & gateway', 'controls'), (7, 'Console', 'settings'), (8, 'Vehicle config', 'settings'),
+                                  (3, 'Diagnostics', 'settings'), (4, 'About', 'help')):
             nav = QToolButton()
-            nav.setText(self.tr2(en, zh).replace('&', '&&'))
-            nav.setProperty('full_text', self.tr2(en, zh))
+            nav.setText(en.replace('&', '&&'))
+            nav.setProperty('full_text', en)
             nav.setProperty('symbol', symbol)
-            nav.setToolTip(self.tr2(en, zh))
-            nav.setAccessibleName(self.tr2(en, zh))
+            nav.setToolTip(en)
+            nav.setAccessibleName(en)
             nav.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             nav.setIconSize(QSize(22, 22))
             nav.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -182,37 +185,31 @@ class MainWindow(QMainWindow):
             self.nav_group.addButton(nav, index)
             side.addWidget(nav)
         side.addStretch()
-        self.session_hint = label(self.tr2("Closing this panel keeps your device running.", "关闭面板后，设备仍会继续运行。"), "muted", True)
+        self.session_hint = label("Closing this panel keeps your device running.", "muted", True)
         side.addWidget(self.session_hint)
         side.addSpacing(16)
-        self.language = QComboBox()
-        self.language.addItems(["English", "简体中文"])
-        self.language.setCurrentIndex(1 if self.zh else 0)
-        self.language.currentIndexChanged.connect(self.change_language)
-        self.language.setAccessibleName(self.tr2('Language', '语言'))
-        side.addWidget(self.language)
         self.appearance = QComboBox()
-        for key, en, zh in (('system', 'System theme', '跟随系统'), ('light', 'Light theme', '浅色主题'), ('dark', 'Dark theme', '深色主题')):
-            self.appearance.addItem(self.tr2(en, zh), key)
+        for key, en in (('system', 'System theme'), ('light', 'Light theme'), ('dark', 'Dark theme')):
+            self.appearance.addItem(en, key)
         self.appearance.setCurrentIndex(max(0, self.appearance.findData(self.settings.value('appearance', 'system'))))
-        self.appearance.setAccessibleName(self.tr2('Appearance', '外观'))
+        self.appearance.setAccessibleName('Appearance')
         self.appearance.currentIndexChanged.connect(self.change_appearance)
         side.addWidget(self.appearance)
         self.accent = QComboBox()
-        for key, en, zh in (('violet', 'Iris', '鸢尾紫'), ('blue', 'Blue', '晴空蓝'), ('green', 'Leaf', '叶绿')):
-            self.accent.addItem(self.tr2(en, zh), key)
+        for key, en in (('violet', 'Iris'), ('blue', 'Blue'), ('green', 'Leaf')):
+            self.accent.addItem(en, key)
         self.accent.setCurrentIndex(max(0, self.accent.findData(self.settings.value('accent', 'violet'))))
-        self.accent.setAccessibleName(self.tr2('Accent color', '强调色'))
+        self.accent.setAccessibleName('Accent color')
         self.accent.currentIndexChanged.connect(self.change_appearance)
         side.addWidget(self.accent)
         self.compact_settings = QToolButton()
         self.compact_settings.setIcon(icon('settings'))
-        self.compact_settings.setAccessibleName(self.tr2('Appearance and language', '外观与语言'))
+        self.compact_settings.setAccessibleName('Appearance')
         self.compact_settings.setToolTip(self.compact_settings.accessibleName())
         self.compact_settings.setPopupMode(QToolButton.InstantPopup)
         preferences = QMenu(self.compact_settings)
-        for combo, en, zh in ((self.appearance, 'Appearance', '外观'), (self.accent, 'Accent color', '强调色'), (self.language, 'Language', '语言')):
-            menu = preferences.addMenu(self.tr2(en, zh))
+        for combo, en in ((self.appearance, 'Appearance'), (self.accent, 'Accent color')):
+            menu = preferences.addMenu(en)
             for index in range(combo.count()):
                 action = menu.addAction(combo.itemText(index))
                 action.triggered.connect(lambda checked=False, box=combo, i=index: box.setCurrentIndex(i))
@@ -226,12 +223,12 @@ class MainWindow(QMainWindow):
         title_row = QHBoxLayout()
         title_row.addWidget(self.page_title, 1)
         layout.addLayout(title_row)
-        self.banner = label(self.tr2("Checking your Linux environment…", "正在检查 Linux 环境…"), "notice", True)
+        self.banner = label("Checking your Linux environment…", "notice", True)
         banner_row = QHBoxLayout()
         banner_row.addWidget(self.banner, 1)
         self.dismiss_button = QToolButton()
         self.dismiss_button.setText('×')
-        self.dismiss_button.setToolTip(self.tr2('Dismiss message', '关闭提示'))
+        self.dismiss_button.setToolTip('Dismiss message')
         self.dismiss_button.clicked.connect(self.dismiss_notice)
         banner_row.addWidget(self.dismiss_button)
         layout.addLayout(banner_row)
@@ -244,16 +241,19 @@ class MainWindow(QMainWindow):
         self.browser_panel = BrowserPanel(self)
         self.services_panel = ServicesPanel(self)
         self.can_panel = CanPanel(self)
+        self.console_panel = ConsolePanel(self)
+        self.config_panel = ConfigPanel(self)
+        if config_draft: self.config_panel.restore_draft(config_draft)
         if browser_draft: self.browser_panel.restore_draft(browser_draft)
-        if services_draft: self.services_panel.restore_draft(services_draft)
-        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.services_panel, self.can_panel):
+        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.can_panel, self.console_panel, self.config_panel):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             scroll.setWidget(page)
             self.pages.addWidget(scroll)
+        if services_draft: self.services_panel.restore_draft(services_draft)
         layout.addWidget(self.pages, 1)
-        self.footer = label(self.tr2("Native Qt interface · User-provided firmware · Local simulation", "原生 Qt 界面 · 用户自备固件 · 本地模拟"), "muted")
+        self.footer = label("Native Qt interface · User-provided firmware · Local simulation", "muted")
         layout.addWidget(self.footer)
         outer.addWidget(main, 1)
         tools = QFrame()
@@ -262,19 +262,19 @@ class MainWindow(QMainWindow):
         rail.setContentsMargins(0, 0, 0, 0)
         rail.setSpacing(4)
         self.tool_buttons = {}
-        for name, symbol, en, zh, callback in (
-            ('center', 'screen', 'Center', '中控', lambda: self.bridge.call('focus', '--display', 'center')),
-            ('cluster', 'cluster', 'Cluster', '仪表', lambda: self.bridge.call('focus', '--display', 'cluster')),
-            ('restart', 'restart', 'Restart', '重启', lambda: self.operation('restart')),
-            ('capture', 'camera', 'Capture', '截图', lambda: self.bridge.call('capture'))):
+        for name, symbol, en, callback in (
+            ('center', 'screen', 'Center', lambda: self.bridge.call('focus', '--display', 'center')),
+            ('cluster', 'cluster', 'Cluster', lambda: self.bridge.call('focus', '--display', 'cluster')),
+            ('restart', 'restart', 'Restart', lambda: self.operation('restart')),
+            ('capture', 'camera', 'Capture', lambda: self.bridge.call('capture'))):
             button = QToolButton()
             button.setIcon(icon(symbol))
             button.setIconSize(QSize(24, 24))
-            button.setText(self.tr2(en, zh))
+            button.setText(en)
             button.setToolButtonStyle(Qt.ToolButtonIconOnly)
             button.setProperty('symbol', symbol)
-            button.setAccessibleName(self.tr2(en, zh))
-            button.setToolTip(self.tr2(en, zh))
+            button.setAccessibleName(en)
+            button.setToolTip(en)
             button.setFixedSize(44, 44)
             button.clicked.connect(callback)
             rail.addWidget(button)
@@ -331,27 +331,26 @@ class MainWindow(QMainWindow):
 
     def setup_text(self):
         messages = {
-            'checking': ('Checking this computer…', '正在检查电脑…'),
-            'ready': ('Ready for your devices', '可以启动设备'),
-            'dependencies': ('Install the display and runtime components to get started.', '安装显示及运行组件后即可使用。'),
-            'display': ('A Linux desktop display is required. Check WSLg or your X11 session.', '需要 Linux 桌面显示，请检查 WSLg 或 X11 会话。'),
-            'services': ('Enable the Linux user service manager before starting.', '启动前请启用 Linux 用户服务管理器。'),
-            'mounts': ('The Linux user needs access to FUSE for read-only images.', 'Linux 用户需要 FUSE 权限才能只读挂载镜像。'),
-            'user': ('Open this app as your normal Linux user.', '请使用普通 Linux 用户打开应用。'),
-            'architecture': ('This device requires an x86_64 Linux computer.', '此设备需要 x86_64 Linux 电脑。'),
-            'virtual-image': ('Prepare a QEMU guest, or choose an existing guest directory.', '准备 QEMU 客体，或选择已有虚拟机目录。'),
-            'kvm': ('The Linux user needs access to /dev/kvm.', 'Linux 用户需要 /dev/kvm 的访问权限。'),
+            'checking': ('Checking this computer…'),
+            'ready': ('Ready for your devices'),
+            'dependencies': ('Install the display and runtime components to get started.'),
+            'display': ('A Linux desktop display is required. Check WSLg or your X11 session.'),
+            'services': ('Enable the Linux user service manager before starting.'),
+            'mounts': ('The Linux user needs access to FUSE for read-only images.'),
+            'user': ('Open this app as your normal Linux user.'),
+            'architecture': ('This device requires an x86_64 Linux computer.'),
+            'virtual-image': ('Prepare a QEMU guest, or choose an existing guest directory.'),
+            'kvm': ('The Linux user needs access to /dev/kvm.'),
         }
-        return self.tr2(*messages[readiness(self.environment)])
+        return messages[readiness(self.environment)]
 
     def simulator_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 14, 0, 0)
         panel, inner = card()
-        inner.addWidget(label(self.tr2("Drive the local demo", "控制本地演示"), "subtitle"))
-        inner.addWidget(label(self.tr2("These are simulated inputs. They do not connect to a vehicle. Firmware acceptance appears below.",
-                                      "这些输入只用于本地模拟，不连接真实车辆。下方显示固件的接收结果。"), "muted", True))
+        inner.addWidget(label("Drive the local demo", "subtitle"))
+        inner.addWidget(label("These are simulated inputs. They do not connect to a vehicle. Firmware acceptance appears below.", "muted", True))
         gear_row = QHBoxLayout()
         self.gears = QButtonGroup(self)
         for gear in ("P", "R", "N", "D"):
@@ -361,53 +360,70 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda checked=False, g=gear: self.set_gear(g))
             self.gears.addButton(button)
             gear_row.addWidget(button)
+        self.car_off_button = QPushButton("Car off")
+        self.car_off_button.setCheckable(True)
+        self.car_off_button.setChecked(self.sim.car_off)
+        self.car_off_button.clicked.connect(self.set_car_off)
+        gear_row.addWidget(self.car_off_button)
         inner.addLayout(gear_row)
         self.sliders, self.slider_values = {}, {}
-        for key, en, zh, low, high, suffix in (
-            ("speed_kph", "Dummy speed", "模拟车速", 0, 200, "km/h"),
-            ("throttle_pct", "Accelerator", "加速踏板", 0, 100, "%"),
-            ("brake_pct", "Brake", "制动踏板", 0, 100, "%"),
-            ("steering_deg", "Steering wheel", "方向盘角度", -540, 540, "°")):
+        for key, en, low, high, suffix in (
+            ("speed_kph", "Dummy speed", 0, 200, "km/h"),
+            ("throttle_pct", "Accelerator", 0, 100, "%"),
+            ("brake_pct", "Brake", 0, 100, "%"),
+            ("steering_deg", "Steering wheel", -540, 540, "°")):
             row = QHBoxLayout()
-            row.addWidget(label(self.tr2(en, zh)))
+            row.addWidget(label(en))
             row.addStretch()
             value = label(f"{int(getattr(self.sim, key))} {suffix}", "eyebrow")
             row.addWidget(value)
             inner.addLayout(row)
             slider = QSlider(Qt.Horizontal)
-            slider.setAccessibleName(self.tr2(en, zh))
+            slider.setAccessibleName(en)
             slider.setRange(low, high)
             slider.setValue(int(getattr(self.sim, key)))
             slider.valueChanged.connect(lambda v, k=key, s=suffix: self.set_control(k, v, s))
             self.sliders[key], self.slider_values[key] = slider, value
             inner.addWidget(slider)
+        row = QHBoxLayout()
+        row.addWidget(label("Power meter"))
+        row.addStretch()
+        self.power_value = label("", "eyebrow")
+        row.addWidget(self.power_value)
+        inner.addLayout(row)
+        power = self.services_panel.power_slider
+        power.valueChanged.connect(lambda v: self.power_value.setText(f"{v:+d} kW"))
+        self.power_value.setText(f"{power.value():+d} kW")
+        inner.addWidget(power)
         self.radius_label = label("", "muted")
         inner.addWidget(self.radius_label)
         row = QHBoxLayout()
-        row.addWidget(label(self.tr2("Turn signals", "转向灯")))
+        row.addWidget(label("Turn signals"))
         self.indicator = QComboBox()
-        for key, en, zh in (("off", "Off", "关闭"), ("left", "Left", "左转"), ("right", "Right", "右转"), ("hazard", "Hazards", "双闪")):
-            self.indicator.addItem(self.tr2(en, zh), key)
+        for key, en in (("off", "Off"), ("left", "Left"), ("right", "Right"), ("hazard", "Hazards")):
+            self.indicator.addItem(en, key)
         self.indicator.setCurrentIndex(('off', 'left', 'right', 'hazard').index(self.sim.indicator))
         self.indicator.currentIndexChanged.connect(lambda _: self.set_indicator())
         row.addWidget(self.indicator, 1)
-        row.addWidget(self.button("Reset to Park", "恢复驻车", self.reset_simulator))
+        row.addWidget(self.button("Reset to Park", self.reset_simulator))
         inner.addLayout(row)
-        layout.addWidget(panel)
-        self.control_feedback = label(self.tr2("Start a session to send inputs. Speed is an explicit test value; the pedals do not run a physics model.",
-                                                "启动会话后可发送输入。车速是手动测试值；踏板不驱动物理模型。"), "notice", True)
-        layout.addWidget(self.control_feedback)
+        drive = QWidget()
+        drive_layout = QVBoxLayout(drive)
+        drive_layout.setContentsMargins(0, 0, 0, 0)
+        drive_layout.addWidget(panel)
+        self.control_feedback = label("Start a session to send inputs. Speed is an explicit test value; the pedals do not run a physics model.", "notice", True)
+        drive_layout.addWidget(self.control_feedback)
         wheel, wheel_layout = card()
-        wheel_layout.addWidget(label(self.tr2('Steering-wheel buttons', '方向盘按钮'), 'subtitle'))
+        wheel_layout.addWidget(label('Steering-wheel buttons', 'subtitle'))
         pods = QHBoxLayout()
         self.wheel_buttons = []
-        for side, en, zh in (('left', 'Left · Media', '左侧 · 媒体'), ('right', 'Right · Instruments', '右侧 · 仪表')):
+        for side, en in (('left', 'Left · Media'), ('right', 'Right · Instruments')):
             pod = QVBoxLayout()
-            pod.addWidget(label(self.tr2(en, zh), 'eyebrow'))
+            pod.addWidget(label(en, 'eyebrow'))
             grid = QGridLayout()
-            actions = [(key, item) for key, item in STEERING_ACTIONS.items() if item[2] == side]
-            for index, (key, (english, chinese, _)) in enumerate(actions):
-                button = HoldButton(self.tr2(english, chinese), repeat=key in ('volume_up', 'volume_down'))
+            actions = [(key, item) for key, item in STEERING_ACTIONS.items() if item[1] == side]
+            for index, (key, (english, _)) in enumerate(actions):
+                button = HoldButton(english, repeat=key in ('volume_up', 'volume_down'))
                 button.triggered.connect(lambda action=key: self.send_steering(action))
                 button.setObjectName('wheel_' + key)
                 grid.addWidget(button, index // 2, index % 2)
@@ -416,11 +432,13 @@ class MainWindow(QMainWindow):
             pod.addStretch()
             pods.addLayout(pod, 1)
         wheel_layout.addLayout(pods)
-        wheel_layout.addWidget(label(self.tr2('Hold Volume + or − to adjust continuously. Release or leave the button to stop.',
-                                             '按住音量＋或－连续调整；松开或移出按钮即停止。'), 'muted', True))
-        wheel_layout.addWidget(label(self.tr2('Media buttons use the active native player. Right buttons open instrument panels; voice recognition needs its own service.',
-                                             '媒体按钮控制当前原生播放器。右侧按钮打开仪表卡片；语音识别仍需要语音服务。'), 'muted', True))
-        layout.addWidget(wheel)
+        wheel_layout.addWidget(label('Hold Volume + or − to adjust continuously. Release or leave the button to stop.', 'muted', True))
+        wheel_layout.addWidget(label('Media buttons use the active native player. Right buttons open instrument panels; voice recognition needs its own service.', 'muted', True))
+        tabs = self.services_panel.tabs
+        tabs.insertTab(0, drive, 'Drive')
+        tabs.insertTab(1, wheel, 'Wheel buttons')
+        tabs.setCurrentIndex(0)
+        layout.addWidget(self.services_panel)
         layout.addStretch()
         self.update_radius()
         return page
@@ -429,51 +447,99 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 14, 0, 0)
-        layout.addWidget(label(self.tr2("Camera feed", "摄像头输入"), "subtitle"))
-        layout.addWidget(label(self.tr2("Choose a source, then open Camera on the center display or select Reverse. The firmware receives this feed through its camera input.",
-                                      "选择画面来源，然后打开中控的摄像头页面或切换倒挡。画面会通过摄像头输入进入固件。"), "muted", True))
+        layout.addWidget(label("Camera feed", "subtitle"))
+        layout.addWidget(label("Choose a source, then open Camera on the center display or select Reverse. The firmware receives this feed through its camera input.", "muted", True))
         self.camera_status = label('', 'notice', True)
         layout.addWidget(self.camera_status)
         self.replay_panel = ReplayPanel(self)
         layout.addWidget(self.replay_panel)
         self.camera_preview = CameraPreview()
-        self.camera_preview.message = self.tr2('Choose a source to preview camera frames', '选择来源后显示摄像头画面')
+        self.camera_preview.message = 'Choose a source to preview camera frames'
         layout.addWidget(self.camera_preview, 1)
-        layout.addWidget(label(self.tr2('Source preview · 1 fps here; full frame rate in the firmware window', '输入预览 · 此处每秒刷新一次，固件窗口以完整帧率播放'), 'muted', True))
+        layout.addWidget(label('Source preview · 1 fps here; full frame rate in the firmware window', 'muted', True))
         actions = QGridLayout()
-        actions.addWidget(self.button("Test pattern", "测试画面", self.show_pattern), 0, 0)
-        actions.addWidget(self.button("Open video…", "打开视频…", self.open_video), 0, 1)
-        actions.addWidget(self.button("Center display", "打开中控", lambda: self.bridge.call('focus', '--display', 'center')), 0, 2)
-        actions.addWidget(self.button("Separate preview", "独立预览窗口", self.float_camera), 1, 0)
-        actions.addWidget(self.button("Stop feed", "停止输入", lambda: self.bridge.call('camera', '--source', 'off')), 1, 1)
+        actions.addWidget(self.button("Test pattern", self.show_pattern), 0, 0)
+        actions.addWidget(self.button("Open video…", self.open_video), 0, 1)
+        actions.addWidget(self.button("Center display", lambda: self.bridge.call('focus', '--display', 'center')), 0, 2)
+        actions.addWidget(self.button("Separate preview", self.float_camera), 1, 0)
+        actions.addWidget(self.button("Stop feed", lambda: self.bridge.call('camera', '--source', 'off')), 1, 1)
         layout.addLayout(actions)
         pipeline = QHBoxLayout()
         self.camera_path = QLineEdit(str(self.settings.value('camera_raw_path', '/tmp/tesla-sim/v4l2-back.rgb')))
-        self.camera_path.setPlaceholderText(self.tr2('Linux path to your RGB24 output', 'RGB24 输出的 Linux 路径'))
-        self.camera_path.setAccessibleName(self.tr2('Existing camera pipeline path', '现有摄像头管线路径'))
+        self.camera_path.setPlaceholderText('Linux path to your RGB24 output')
+        self.camera_path.setAccessibleName('Existing camera pipeline path')
         pipeline.addWidget(self.camera_path, 1)
-        pipeline.addWidget(self.button('Connect pipeline', '接入现有管线', self.connect_camera_pipeline))
+        pipeline.addWidget(self.button('Connect pipeline', self.connect_camera_pipeline))
         layout.addLayout(pipeline)
-        layout.addWidget(label(self.tr2('Existing pipeline: 1280 × 720 RGB24. Start your writer, then connect its output file.', '现有管线格式：1280 × 720 RGB24。启动原有 writer 后，接入它的输出文件。'), 'muted', True))
+        layout.addWidget(label('Existing pipeline: 1280 × 720 RGB24. Start your writer, then connect its output file.', 'muted', True))
         return page
 
     def diagnostics_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 14, 0, 0)
-        layout.addWidget(label(self.tr2("See what is happening", "查看运行情况"), "subtitle"))
-        layout.addWidget(label(self.tr2("Health checks are separate from raw logs. Export creates a small report without firmware, browser profiles, raw logs or personal paths.",
-                                      "健康检查与原始日志分开显示。导出报告不包含固件、浏览器配置、原始日志或个人路径。"), "muted", True))
+        layout.addWidget(label("See what is happening", "subtitle"))
+        layout.addWidget(label("Health checks are separate from raw logs. Export creates a small report without firmware, browser profiles, raw logs or personal paths.", "muted", True))
         row = QHBoxLayout()
-        row.addWidget(self.button("Check environment", "检查环境", lambda: self.bridge.call("probe")))
-        row.addWidget(self.button("View local logs", "查看本地日志", lambda: self.bridge.call("logs")))
-        row.addWidget(self.button("Export report…", "导出报告…", lambda: self.bridge.call("report")))
+        row.addWidget(self.button("Check environment", lambda: self.bridge.call("probe")))
+        row.addWidget(self.button("View local logs", lambda: self.bridge.call("logs")))
+        row.addWidget(self.button("Export report…", lambda: self.bridge.call("report")))
         layout.addLayout(row)
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText(self.tr2('Choose View local logs to inspect the current session, or Check environment to refresh setup checks.', '点击“查看本地日志”检查会话，或点击“检查环境”刷新运行条件。'))
+        self.log_view.setPlaceholderText('Choose View local logs to inspect the current session, or Check environment to refresh setup checks.')
         layout.addWidget(self.log_view, 1)
+        self.log_view.setMinimumHeight(240)
+        self.alert_box, alerts = card()
+        header = QHBoxLayout()
+        header.addWidget(label('Alerts', 'subtitle'), 1)
+        self.clear_alerts_button = self.button('Clear all', self.clear_alerts)
+        header.addWidget(self.clear_alerts_button)
+        alerts.addLayout(header)
+        self.alert_empty = label('No alerts. Refused config values and the reasons the firmware restarts are listed here.', 'muted', True)
+        alerts.addWidget(self.alert_empty)
+        self.alert_rows = QVBoxLayout()  # plain rows: the page scrolls, not a nested list
+        self.alert_rows.setSpacing(10)
+        alerts.addLayout(self.alert_rows)
+        layout.insertWidget(2, self.alert_box)
+        self.refresh_alerts()
         return page
+
+    def raise_alert(self, text, details=()):
+        """A lasting alert, like the car's: listed under Diagnostics and counted on its sidebar entry."""
+        self.alerts = (self.alerts + [(time.strftime('%H:%M'), text, list(details))])[-MAX_ALERTS:]
+        self.refresh_alerts()
+        self.show_message(text + '  See Diagnostics › Alerts.', True)
+
+    def clear_alerts(self):
+        self.alerts.clear()
+        self.refresh_alerts()
+
+    def refresh_alerts(self):
+        while self.alert_rows.count():
+            row = self.alert_rows.takeAt(0).widget()
+            row.hide()
+            row.deleteLater()
+        for stamp, text, details in reversed(self.alerts):
+            row = QFrame()
+            lines = QVBoxLayout(row)
+            lines.setContentsMargins(0, 0, 0, 0)
+            lines.setSpacing(2)
+            heading = label(f'{stamp}  ·  {text}', None, True)
+            heading.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            lines.addWidget(heading)
+            if details:
+                shown = ', '.join(details[:ALERT_NAMES]) + (f' and {len(details) - ALERT_NAMES} more' if len(details) > ALERT_NAMES else '')
+                names = label(shown, 'muted', True)
+                names.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                names.setToolTip('\n'.join(details))
+                lines.addWidget(names)
+            self.alert_rows.addWidget(row)
+        self.alert_empty.setVisible(not self.alerts)
+        self.clear_alerts_button.setEnabled(bool(self.alerts))
+        nav = self.nav_group.button(3)
+        nav.setText(f'Diagnostics  ({len(self.alerts)})' if self.alerts else 'Diagnostics')
+        nav.setIcon(icon('warning' if self.alerts else 'settings'))
 
     def about_page(self):
         page = QWidget()
@@ -481,16 +547,10 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 14, 0, 0)
         panel, inner = card()
         inner.addWidget(label("tsla-infotainment-lab", "subtitle"))
-        inner.addWidget(label(self.tr2(
-            "A desktop workbench built from hands-on infotainment compatibility research. Import your own firmware, inspect the environment, and launch its real interface in separate desktop windows.",
-            "一个从实际车机兼容性研究中整理出的桌面工作台。导入自备固件，检查环境，并在独立桌面窗口中运行真实车机界面。"), None, True))
-        inner.addWidget(label(self.tr2(
-            f"Version {__version__} supports the tested 2026.26.6.1 Model S/X MCU2 build. Other images can be identified but require a matching profile. This is user-space compatibility, not complete hardware emulation.",
-            f"{__version__} 版本支持已验证的 2026.26.6.1 Model S/X MCU2 构建。其他镜像可以识别，但需要对应适配配置。这是用户态兼容运行，不是完整硬件仿真。"), "muted", True))
-        inner.addWidget(label(self.tr2(
-            "Bring your own firmware and recordings. The desktop provides local vehicle inputs, camera replay and browser integration. Vehicle services show their actual firmware response. Steering radius illustrates a 2.96 m wheelbase and 14.8:1 steering ratio.",
-            "请自备固件与录像。桌面提供本地车辆输入、摄像头回放和浏览器集成，车辆服务会显示固件的实际响应。示意转弯半径采用 2.96 米轴距与 14.8:1 转向比。"), "muted", True))
-        inner.addWidget(label(self.tr2("Independent research project. Not affiliated with or endorsed by Tesla.", "独立研究项目，与 Tesla 无隶属或背书关系。"), "muted", True))
+        inner.addWidget(label("A desktop workbench built from hands-on infotainment compatibility research. Import your own firmware, inspect the environment, and launch its real interface in separate desktop windows.", None, True))
+        inner.addWidget(label(f"Version {__version__} supports the tested 2026.26.6.1 Model S/X MCU2 build. Other images can be identified but require a matching profile. This is user-space compatibility, not complete hardware emulation.", "muted", True))
+        inner.addWidget(label("Bring your own firmware and recordings. The desktop provides local vehicle inputs, camera replay and browser integration. Vehicle services show their actual firmware response. Steering radius illustrates a 2.96 m wheelbase and 14.8:1 steering ratio.", "muted", True))
+        inner.addWidget(label("Independent research project. Not affiliated with or endorsed by Tesla.", "muted", True))
         layout.addWidget(panel)
         layout.addStretch()
         return page
@@ -498,10 +558,10 @@ class MainWindow(QMainWindow):
     def show_page(self, index):
         self.current_page = index
         self.pages.setCurrentIndex(index)
-        titles = (("Device manager", "设备管理"), ("Vehicle controls", "车辆控制"), ("Camera & replay", "摄像头与回放"),
-                  ("Diagnostics", "诊断"), ("About this lab", "关于项目"), ('Browser workspace', '浏览器工作区'), ('Vehicle services', '车辆服务'),
-                  ('CAN & gateway', 'CAN 与网关'))
-        self.page_title.setText(self.tr2(*titles[index]))
+        titles = ("Device manager", "Vehicle controls", "Camera & replay",
+                  "Diagnostics", "About this lab", 'Browser workspace',
+                  'CAN & gateway', 'Console', 'Vehicle configuration')
+        self.page_title.setText(titles[index])
         self.nav_group.button(index).setChecked(True)
         self.refresh_icons()
 
@@ -535,7 +595,7 @@ class MainWindow(QMainWindow):
         compact = self.width() < 1220
         self.compact_settings.setVisible(compact)
         self.sidebar.setFixedWidth(88 if compact else 232)
-        for widget in (self.version_label, self.session_hint, self.language, self.appearance, self.accent):
+        for widget in (self.version_label, self.session_hint, self.appearance, self.accent):
             widget.setVisible(not compact)
         for button in self.nav_group.buttons():
             button.setToolButtonStyle(Qt.ToolButtonIconOnly if compact else Qt.ToolButtonTextBesideIcon)
@@ -545,17 +605,12 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self.adapt_navigation()
 
-    def change_language(self, index):
-        self.zh = index == 1
-        self.settings.setValue("language", "zh" if self.zh else "en")
-        self.rebuild()
-
     def change_distro(self, value):
         self.bridge.distro = value.strip() or "Debian"
         self.settings.setValue("distro", self.bridge.distro)
 
     def choose_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, self.tr2("Import firmware or maps", "导入固件或地图"), "",
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import firmware or maps", "",
                                                "Firmware and maps (*.mcu2 *.ice *.map *.squashfs);;All files (*)")
         self.queue_imports(paths)
 
@@ -574,7 +629,7 @@ class MainWindow(QMainWindow):
         self.items.blockSignals(True)
         self.items.clear()
         self.maps_box.clear()
-        self.maps_box.addItem(self.tr2('No map image', '不挂载地图'), None)
+        self.maps_box.addItem('No map image', None)
         selected_row = 0
         for entry in self.library:
             if entry['kind'] == 'map':
@@ -584,9 +639,9 @@ class MainWindow(QMainWindow):
             if profile:
                 entry['supported'] = True
             title = profile['name'] if profile else entry['variant']
-            support = self.tr2('Ready', '可启动') if entry['supported'] else self.tr2('Needs a profile', '需要适配')
+            support = 'Ready' if entry['supported'] else 'Needs a profile'
             if profile and profile.get('experimental'):
-                support = self.tr2('Experimental · launch checks required', '实验性 · 启动前检查兼容性')
+                support = 'Experimental · launch checks required'
             item = QListWidgetItem(f"{title}\n{entry['version']}\n{support} · {size_label(entry['bytes'])}")
             item.setData(Qt.UserRole, entry)
             self.items.addItem(item)
@@ -611,7 +666,7 @@ class MainWindow(QMainWindow):
         self.busy, self.active_action = True, action
         if not self.bridge.call(action, *args):
             self.busy, self.active_action = False, None
-            self.show_message(self.tr2('An operation is already in progress.', '已有操作正在执行。'), True)
+            self.show_message('An operation is already in progress.', True)
         self.update_status()
 
     def start_session(self):
@@ -622,6 +677,13 @@ class MainWindow(QMainWindow):
         if not self.browser_box.isChecked(): args += ["--no-browser"]
         if not self.cluster_box.isChecked(): args += ["--no-cluster"]
         self.operation("start", *args)
+
+    def full_reset(self):
+        text = ('Delete all cached data, saved settings and the library index, as if the app had just been installed? '
+                'The session stops, the firmware image is unmounted and images must be imported again. '
+                'Your original files are not touched.')
+        if QMessageBox.warning(self, 'Full reset', text, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) == QMessageBox.Yes:
+            self.operation('factory-reset')
 
     def check_qemu(self):
         entry = self.selected_item()
@@ -648,7 +710,7 @@ class MainWindow(QMainWindow):
         self.update_status()
 
     def choose_vm_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, self.tr2('Choose a QEMU guest', '选择 QEMU 客体目录'),
+        directory = QFileDialog.getExistingDirectory(self, 'Choose a QEMU guest',
                                                        self.vm_directory.text())
         if directory:
             self.vm_directory.setText(directory)
@@ -660,12 +722,10 @@ class MainWindow(QMainWindow):
                 self.show_page(3)
             self.bridge.call('probe')
             return
-        text = self.tr2("Install the Linux display, audio, compiler and read-only mount packages using your distribution's package manager? This changes the selected Linux environment.",
-                        "是否通过发行版的软件包管理器安装显示、音频、编译器和只读挂载依赖？此操作会修改所选 Linux 环境。")
+        text = "Install the Linux display, audio, compiler and read-only mount packages using your distribution's package manager? This changes the selected Linux environment."
         if self.bridge.engine == 'qemu':
-            text = self.tr2('Download the QEMU dependencies and build a new Debian guest disk? Existing VM directories are preserved. This may take several minutes.',
-                            '下载 QEMU 依赖并构建新的 Debian 客体系统盘？已有虚拟机目录会保留，准备过程可能需要几分钟。')
-        if QMessageBox.question(self, self.tr2("Runtime setup", "运行环境安装"), text) == QMessageBox.Yes:
+            text = 'Download the QEMU dependencies and build a new Debian guest disk? Existing VM directories are preserved. This may take several minutes.'
+        if QMessageBox.question(self, "Runtime setup", text) == QMessageBox.Yes:
             self.operation("setup")
 
     def send_steering(self, action):
@@ -674,11 +734,15 @@ class MainWindow(QMainWindow):
         self.bridge.call('steering', '--button', action)
 
     def received(self, action, result):
+        if action == 'ssh-key':
+            self.console_panel.key_result(result)
+            return
         if action in ('can', 'can-start', 'can-status'):
             self.can_panel.received(action, result)
             return
         if action == 'vehicle-services': self.services_panel.acknowledge(bool(result.get('ok')))
-        if action in ('start', 'stop', 'restart', 'import', 'setup', 'qemu-check'):
+        if action == 'config-values': self.config_panel.acknowledge(bool(result.get('ok')), result.get('data'))
+        if action in ('start', 'stop', 'restart', 'import', 'setup', 'qemu-check', 'factory-reset'):
             self.busy, self.active_action = False, None
         if not result.get('ok'):
             if action == 'steering':
@@ -686,7 +750,7 @@ class MainWindow(QMainWindow):
                     button.cancel_hold()
             if action == 'camera-preview': return
             if action == 'preview':
-                self.preview_caption.setText(self.tr2('Preview unavailable · Open a display directly', '预览暂不可用 · 可直接打开显示窗口'))
+                self.preview_caption.setText('Preview unavailable · Open a display directly')
                 return
             self.show_message(result.get('error', 'Unknown error'), True)
             self.update_status()
@@ -694,8 +758,7 @@ class MainWindow(QMainWindow):
         data = result.get('data', {})
         if action == 'qemu-check':
             self.log_view.setPlainText(json.dumps(data, indent=2, ensure_ascii=False))
-            self.show_message(self.tr2('QEMU check finished; full firmware desktop is not verified. See Diagnostics.',
-                                       'QEMU 检查结束；完整车机桌面尚未验证，请查看诊断。'), True)
+            self.show_message('QEMU check finished; full firmware desktop is not verified. See Diagnostics.', True)
             self.update_status()
             return
         if action == 'probe':
@@ -712,12 +775,12 @@ class MainWindow(QMainWindow):
                 self.manual_override = False
         elif action == 'camera':
             if data.get('mode') == 'replay': self.manual_override = False
-            self.show_message(self.tr2('Camera source selected.', '已选择摄像头来源。'))
+            self.show_message('Camera source selected.')
             self.bridge.call('status')
-        elif action in ('replay', 'vehicle-services', 'browser', 'steering'):
+        elif action in ('replay', 'vehicle-services', 'config-values', 'browser', 'steering'):
             if action == 'replay' and data.get('action') == 'play': self.manual_override = False
             if action == 'steering':
-                self.show_message(data.get('warning') or self.tr2('Steering-wheel command sent.', '已发送方向盘按钮指令。'))
+                self.show_message(data.get('warning') or 'Steering-wheel command sent.')
             self.bridge.call('status')
         elif action == 'camera-preview':
             frame = QPixmap()
@@ -731,18 +794,27 @@ class MainWindow(QMainWindow):
             for row in range(self.items.count()):
                 if self.items.item(row).data(Qt.UserRole)['id'] == data['id']:
                     self.items.setCurrentRow(row)
-            self.show_message(self.tr2('Added to your library. Your original file stays in place.', '已添加至固件库，原文件保留在原位置。'))
+            self.show_message('Added to your library. Your original file stays in place.')
             self.next_import()
         elif action == 'setup':
             self.bridge.call('probe')
+        elif action == 'factory-reset':
+            self.settings.remove('devices')
+            self.settings.remove('selected_device')
+            self.loaded_device_id = None
+            self.session, self.library = data.get('status', {}), []
+            self.refresh_library()
+            self.config_panel.revert()
+            self.show_message('Full reset done. Import a firmware image to start again.')
+            self.update_status()
         elif action == 'logs':
             self.log_view.setPlainText('\n\n'.join(f'--- {name} ---\n{text}' for name, text in data.get('logs', {}).items()))
         elif action == 'report':
-            path, _ = QFileDialog.getSaveFileName(self, self.tr2('Export diagnostics', '导出诊断报告'), 'infotainment-lab-report.json', 'JSON (*.json)')
+            path, _ = QFileDialog.getSaveFileName(self, 'Export diagnostics', 'infotainment-lab-report.json', 'JSON (*.json)')
             if path:
                 try:
                     Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-                    self.show_message(self.tr2('Report saved.', '报告已保存。'))
+                    self.show_message('Report saved.')
                 except OSError as exc:
                     self.show_message(str(exc), True)
         elif action == 'preview':
@@ -753,16 +825,16 @@ class MainWindow(QMainWindow):
                 frames[name] = pixmap
             self.overview.set_frames(frames.get('center', QPixmap()), frames.get('cluster', QPixmap()))
             stamp = time.strftime('%H:%M:%S', time.localtime(data['captured_at']))
-            self.preview_caption.setText(self.tr2('Live overview · ', '实时预览 · ') + stamp + self.tr2(' · Open a display to interact', ' · 打开显示窗口进行操作'))
+            self.preview_caption.setText('Live overview · ' + stamp + ' · Open a display to interact')
         elif action == 'capture':
-            folder = QFileDialog.getExistingDirectory(self, self.tr2('Save display screenshots', '保存显示屏截图'))
+            folder = QFileDialog.getExistingDirectory(self, 'Save display screenshots')
             if folder:
                 try:
                     stamp = time.strftime('%Y%m%d-%H%M%S') + '-' + str(time.time_ns() % 1000000)
                     for name, encoded in data['images'].items():
                         with (Path(folder) / f'infotainment-{name}-{stamp}.png').open('xb') as stream:
                             stream.write(base64.b64decode(encoded))
-                    self.show_message(self.tr2('Screenshots saved to your chosen folder.', '截图已保存至所选文件夹。'))
+                    self.show_message('Screenshots saved to your chosen folder.')
                 except OSError as exc:
                     self.show_message(str(exc), True)
         self.update_status()
@@ -784,28 +856,29 @@ class MainWindow(QMainWindow):
         self.browser_panel.update_status(self.session)
         self.replay_panel.update_status(self.session)
         self.services_panel.update_status(self.session)
+        self.config_panel.update_status(self.session)
         if hasattr(self, 'control_timer') and not self.manual_override and not self.control_timer.isActive() and 'controls' not in self.bridge.pending:
             actual = self.session.get('replay', {}).get('telemetry_sample', {})
             if self.session.get('camera', {}).get('mode') == 'replay' and self.session.get('replay', {}).get('phase') in ('playing', 'paused', 'seeking-playing', 'ended') and actual:
                 self.sync_control_widgets(actual)
         camera = self.session.get('camera', {})
-        sources = {'pattern': ('Test pattern', '测试画面'), 'video': ('Local video', '本地视频'), 'replay': ('Recorded drive', '行车记录回放'), 'raw': ('Existing pipeline', '现有管线'), 'off': ('Off', '已停止')}
-        camera_text = self.tr2(*sources.get(camera.get('mode'), ('Camera', '摄像头')))
+        sources = {'pattern': ('Test pattern'), 'video': ('Local video'), 'replay': ('Recorded drive'), 'raw': ('Existing pipeline'), 'off': ('Off')}
+        camera_text = sources.get(camera.get('mode'), 'Camera')
         if camera.get('source_name'): camera_text += ' · ' + camera['source_name']
         if camera.get('frame_held'):
-            camera_text += self.tr2(' · Paused — holding frame', ' · 已暂停，保留当前画面') if camera.get('phase') == 'paused' else self.tr2(' · Ended — holding last frame', ' · 回放结束，保留最后画面')
+            camera_text += ' · Paused — holding frame' if camera.get('phase') == 'paused' else ' · Ended — holding last frame'
         elif camera.get('firmware_receiving'):
-            camera_text += self.tr2(' · Firmware receiving', ' · 固件正在接收') + f" · {camera.get('fps', 0):.1f} fps · 1280 × 720"
+            camera_text += ' · Firmware receiving' + f" · {camera.get('fps', 0):.1f} fps · 1280 × 720"
         elif camera.get('source_ready'):
-            camera_text += self.tr2(' · Source ready. Open Camera on the center display.', ' · 画面已就绪，请打开中控摄像头页面。')
+            camera_text += ' · Source ready. Open Camera on the center display.'
         elif not live:
-            camera_text = self.tr2('Start a device to connect the camera feed.', '启动设备后即可接入摄像头画面。')
+            camera_text = 'Start a device to connect the camera feed.'
             self.camera_preview.set_frame(QPixmap())
             if self.camera_window: self.camera_window.set_frame(QPixmap())
         elif camera.get('phase') == 'off':
-            camera_text += self.tr2(' · Feed stopped', ' · 输入已停止')
+            camera_text += ' · Feed stopped'
         else:
-            camera_text += self.tr2(' · Waiting for frames. Check the source file and writer.', ' · 等待画面，请检查源文件与 writer 是否运行。')
+            camera_text += ' · Waiting for frames. Check the source file and writer.'
         self.camera_status.setText(camera_text)
         self.camera_status.setToolTip(camera.get('detail', ''))
         selected = self.selected_item()
@@ -813,11 +886,12 @@ class MainWindow(QMainWindow):
         self.qemu_button.setEnabled(bool(selected and selected.get('kind', 'firmware') == 'firmware') and not self.busy)
         self.start_button.setEnabled(bool(selected and selected.get('supported')) and ready and not self.busy and not live)
         self.stop_button.setEnabled(live and not self.busy)
+        self.reset_button.setEnabled(not self.busy)
         self.engine_box.setEnabled(not live and not self.busy)
         self.vm_directory.setEnabled(not live and not self.busy)
         self.vm_browse.setEnabled(not live and not self.busy)
         self.setup_button.setEnabled(not self.busy and not live and readiness(self.environment) != 'checking')
-        self.setup_button.setText(self.tr2('Check again', '重新检查') if ready else self.tr2('Prepare computer', '准备运行环境'))
+        self.setup_button.setText('Check again' if ready else 'Prepare computer')
         self.setup_hint.setText(self.setup_text())
         for control in (self.cluster_box, self.browser_box, self.maps_box, self.distro_box):
             control.setEnabled(not live and not self.busy)
@@ -825,45 +899,45 @@ class MainWindow(QMainWindow):
         for name, button in self.tool_buttons.items():
             button.setEnabled((usable and not self.busy) if name in ('center', 'cluster', 'restart', 'capture') else True)
         self.tool_buttons['cluster'].setEnabled(usable and self.session.get('components', {}).get('instruments') == 'running' and not self.busy)
-        self.tool_buttons['restart'].setToolTip(self.tr2('Restart this device and return controls to Park', '重启当前设备，并将模拟控制恢复为驻车'))
-        title = self.tr2('Add your first device', '添加第一台设备')
-        subtitle = self.tr2('Bring your firmware. We will check compatibility before launch.', '导入自备固件，启动前会检查兼容性。')
+        self.tool_buttons['restart'].setToolTip('Restart this device and return controls to Park')
+        title = 'Add your first device'
+        subtitle = 'Bring your firmware. We will check compatibility before launch.'
         if selected:
             profile = profile_for(selected['version'], selected['variant'])
             title = profile['name'] if profile else selected['variant']
-            subtitle = selected['version'] + ' · ' + self.tr2('Local firmware', '本地固件')
+            subtitle = selected['version'] + ' · ' + 'Local firmware'
             if profile and profile.get('single_display'):
                 self.cluster_box.setEnabled(False)
-                subtitle += ' · ' + self.tr2('Single display', '单屏平台')
+                subtitle += ' · ' + 'Single display'
             if not selected.get('supported'):
-                subtitle += ' · ' + self.tr2('Launch profile unavailable', '尚无启动适配')
-            self.item_detail.setText(self.tr2('SHA-256 recorded · ', '已记录 SHA-256 · ') + selected['sha256'][:12] + '…')
+                subtitle += ' · ' + 'Launch profile unavailable'
+            self.item_detail.setText('SHA-256 recorded · ' + selected['sha256'][:12] + '…')
         else:
-            self.item_detail.setText(self.tr2('Add a firmware image to create a device.', '添加固件镜像即可创建设备。'))
+            self.item_detail.setText('Add a firmware image to create a device.')
         profile = profile_for(selected['version'], selected['variant']) if selected else None
         self.overview.single_display = bool(profile and profile.get('single_display'))
         self.device_title.setText(title)
         self.device_subtitle.setText(subtitle)
-        phases = {'stopped': ('Offline', '已停止'), 'starting': ('Starting', '启动中'), 'booting': ('Booting', '开机中'),
-                  'stopping': ('Stopping', '关机中'), 'running': ('Running', '运行中'),
-                  'degraded': ('Needs attention', '需要检查'), 'failed': ('Needs attention', '需要检查')}
-        self.phase_badge.setText(self.tr2(*phases.get(phase, ('Unknown', '未知'))))
+        phases = {'stopped': ('Offline'), 'starting': ('Starting'), 'booting': ('Booting'),
+                  'stopping': ('Stopping'), 'running': ('Running'),
+                  'degraded': ('Needs attention'), 'failed': ('Needs attention')}
+        self.phase_badge.setText(phases.get(phase, 'Unknown'))
         state(self.phase_badge, 'phase', phase)
-        self.steps.setText(self.tr2('1  Prepare computer', '1  准备环境') + ('  ✓' if ready else '  ○') + '     /     ' +
-                           self.tr2('2  Add firmware', '2  添加固件') + ('  ✓' if selected else '  ○') + '     /     ' +
-                           self.tr2('3  Start your device', '3  启动设备') + ('  ✓' if usable else '  ○'))
-        labels = {'center': ('Center', '中控'), 'instruments': ('Instruments', '仪表'), 'chromium': ('Chromium', '浏览器')}
+        self.steps.setText('1  Prepare computer' + ('  ✓' if ready else '  ○') + '     /     ' +
+                           '2  Add firmware' + ('  ✓' if selected else '  ○') + '     /     ' +
+                           '3  Start your device' + ('  ✓' if usable else '  ○'))
+        labels = {'center': ('Center'), 'instruments': ('Instruments'), 'chromium': ('Chromium')}
         for key, metric in self.metrics.items():
             running = self.session.get('components', {}).get(key) == 'running' and live
-            metric.setText(('●  ' if running else '○  ') + self.tr2(*labels[key]))
+            metric.setText(('●  ' if running else '○  ') + labels[key])
             state(metric, 'active', running)
         host = self.session.get('host', {})
-        renderer = self.session.get('renderer', self.tr2('Graphics checked at launch', '启动时检查图形加速'))
+        renderer = self.session.get('renderer', 'Graphics checked at launch')
         cluster_graphics = self.session.get('display_graphics', {}).get('cluster')
         if cluster_graphics and not cluster_graphics.get('accelerated'):
-            renderer += self.tr2(' · Instruments: software rendering', ' · 仪表：软件渲染')
+            renderer += ' · Instruments: software rendering'
         if host.get('total_bytes'):
-            renderer += '  ·  ' + size_label(host.get('free_bytes', 0)) + self.tr2(' free of ', ' 可用 / ') + size_label(host['total_bytes'])
+            renderer += '  ·  ' + size_label(host.get('free_bytes', 0)) + ' free of ' + size_label(host['total_bytes'])
         self.renderer_label.setText(renderer)
         self.progress.setVisible(self.busy or phase in ('starting', 'booting', 'stopping'))
         if not live:
@@ -875,42 +949,58 @@ class MainWindow(QMainWindow):
         if self.notification:
             text, error, _ = self.notification
         elif self.busy:
-            messages = {'start': ('Starting your device…', '正在启动设备…'), 'stop': ('Stopping your device…', '正在停止设备…'),
-                        'restart': ('Restarting your device…', '正在重启设备…'), 'import': ('Inspecting firmware and recording its checksum…', '正在检查固件并记录校验值…'),
-                        'setup': ('Preparing your computer. This may take a few minutes…', '正在准备电脑环境，可能需要几分钟…')}
-            text = self.tr2(*messages.get(self.active_action, ('Working…', '正在处理…')))
+            messages = {'start': ('Starting your device…'), 'stop': ('Stopping your device…'),
+                        'restart': ('Restarting your device…'), 'import': ('Inspecting firmware and recording its checksum…'),
+                        'setup': ('Preparing your computer. This may take a few minutes…')}
+            text = messages.get(self.active_action, 'Working…')
         elif phase == 'failed':
             text, error = self.session.get('error', 'Session failed'), True
+        elif phase == 'starting' and self.session.get('configuration_restart'):
+            names = self.session.get('changed_dvs', [])
+            text = ('Restarting: the firmware applies changed ' + ', '.join(names[:4]) + ('…' if len(names) > 4 else '') if names
+                    else 'Restarting: the firmware applies its display settings…') + '  See Diagnostics › Alerts.'
         elif phase in ('starting', 'booting'):
-            text = self.tr2('Starting displays and loading firmware resources…', '正在启动显示窗口并加载固件资源…')
+            text = 'Starting displays and loading firmware resources…'
         elif phase == 'stopping':
-            text = self.tr2('Waiting for the guest to shut down…', '正在等待客体正常关机…')
+            text = 'Waiting for the guest to shut down…'
         elif usable:
             battery = self.session.get('vehicle_services', {}).get('state', {}).get('battery_percent', 50)
-            text = self.tr2('Device running', '设备运行中') + '  ·  ' + self.tr2('Internet connected' if host.get('online') else 'Internet unavailable', '已联网' if host.get('online') else '互联网不可用') + '  ·  ' + self.tr2(f'Battery {battery:g}% · simulated', f'电量 {battery:g}% · 模拟')
+            text = 'Device running' + '  ·  ' + ('Internet connected' if host.get('online') else 'Internet unavailable') + '  ·  ' + f'Battery {battery:g}% · simulated'
             if phase == 'degraded':
-                text += '  ·  ' + self.tr2('A component needs attention. Open Diagnostics.', '部分组件需要检查，请查看诊断。')
+                text += '  ·  ' + 'A component needs attention. Open Diagnostics.'
         elif not ready:
             text = self.setup_text()
         elif selected and not selected.get('supported'):
-            text = self.tr2('This firmware needs a tested launch profile before it can run.', '此固件需要经过验证的启动适配后才能运行。')
+            text = 'This firmware needs a tested launch profile before it can run.'
         else:
-            text = self.tr2('Ready. Choose a device or drop in firmware to get started.', '准备就绪，选择设备或拖入固件即可开始。')
+            text = 'Ready. Choose a device or drop in firmware to get started.'
         self.banner.setText(text)
         state(self.banner, 'error', error)
         feedback = self.session.get('controls', {}).get('firmware', {}).get('com.tesla.CenterDisplay', {})
         if feedback and live:
-            names = {'gear': ('Gear', '挡位'), 'speed_kph': ('Speed', '车速'), 'throttle_pct': ('Accelerator', '加速踏板'),
-                     'brake_pct': ('Brake', '制动踏板'), 'steering_deg': ('Steering', '转向'), 'indicator': ('Signals', '转向灯')}
-            states = {'accepted': ('accepted', '已接收'), 'unsupported': ('unavailable', '不可用'), 'rejected': ('rejected', '未接收')}
-            self.control_feedback.setText(self.tr2('Firmware feedback: ', '固件反馈：') + '  ·  '.join(
-                f'{self.tr2(*names[name])}: {self.tr2(*states.get(value, (value, value)))}' for name, value in feedback.items() if name in names))
+            names = {'gear': ('Gear'), 'speed_kph': ('Speed'), 'throttle_pct': ('Accelerator'),
+                     'brake_pct': ('Brake'), 'steering_deg': ('Steering'), 'indicator': ('Signals'), 'rails': ('Power')}
+            states = {'accepted': ('accepted'), 'unsupported': ('unavailable'), 'rejected': ('rejected')}
+            self.control_feedback.setText('Firmware feedback: ' + '  ·  '.join(
+                f'{names[name]}: {states.get(value, (value, value))}' for name, value in feedback.items() if name in names))
         elif not live:
-            self.control_feedback.setText(self.tr2('Start a device to use the local simulator.', '启动设备后即可使用本地模拟控制。'))
+            self.control_feedback.setText('Start a device to use the local simulator.')
+
+    def set_car_off(self, off):
+        self.manual_override = True
+        self.sim.car_off = off
+        if off:
+            self.sim.gear = "P"
+            for button in self.gears.buttons(): button.setChecked(button.text() == "P")
+            self.sliders["speed_kph"].setValue(0)
+            self.sliders["throttle_pct"].setValue(0)
+        self.control_timer.start(180)
 
     def set_gear(self, gear):
         self.manual_override = True
         self.sim.gear = gear
+        self.sim.car_off = False
+        self.car_off_button.setChecked(False)
         if gear == "P":
             self.sliders["speed_kph"].setValue(0)
             self.sliders["throttle_pct"].setValue(0)
@@ -919,6 +1009,7 @@ class MainWindow(QMainWindow):
     def sync_control_widgets(self, values):
         self.sim = Simulation.parse(values)
         for button in self.gears.buttons(): button.setChecked(button.text() == self.sim.gear)
+        self.car_off_button.setChecked(self.sim.car_off)
         for key, slider in self.sliders.items():
             slider.blockSignals(True)
             slider.setValue(round(getattr(self.sim, key)))
@@ -943,7 +1034,7 @@ class MainWindow(QMainWindow):
 
     def update_radius(self):
         radius = self.sim.turning_radius_m()
-        self.radius_label.setText(self.tr2("Illustrative turn radius: ", "示意转弯半径：") + (f"{radius:.1f} m" if radius else self.tr2("straight", "直行")))
+        self.radius_label.setText("Illustrative turn radius: " + (f"{radius:.1f} m" if radius else "straight"))
 
     def set_indicator(self):
         self.manual_override = True
@@ -958,6 +1049,7 @@ class MainWindow(QMainWindow):
     def reset_simulator(self):
         self.sim = Simulation()
         self.gears.buttons()[0].setChecked(True)
+        self.car_off_button.setChecked(False)
         for slider in self.sliders.values(): slider.setValue(0)
         self.indicator.setCurrentIndex(0)
         self.control_timer.start(180)
@@ -966,7 +1058,7 @@ class MainWindow(QMainWindow):
         self.bridge.call('camera', '--source', 'pattern')
 
     def open_video(self):
-        path, _ = QFileDialog.getOpenFileName(self, self.tr2("Open a local camera clip", "打开本地摄像头视频"), "", "Video (*.mp4 *.mkv *.webm *.mov *.avi);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open a local camera clip", "", "Video (*.mp4 *.mkv *.webm *.mov *.avi);;All files (*)")
         if path:
             self.bridge.call('camera', '--source', 'video', '--path', path)
 
@@ -990,7 +1082,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.busy:
-            QMessageBox.information(self, "Infotainment Lab", self.tr2("Wait for the current operation to finish before closing.", "请等待当前操作完成后再关闭。"))
+            QMessageBox.information(self, "Infotainment Lab", "Wait for the current operation to finish before closing.")
             event.ignore()
             return
         if self.camera_window: self.camera_window.close()
@@ -1006,8 +1098,7 @@ class MainWindow(QMainWindow):
 def main():
     parser = argparse.ArgumentParser(description="Infotainment Lab native desktop application")
     parser.add_argument("files", nargs="*")
-    parser.add_argument("--language", choices=("en", "zh"))
-    parser.add_argument("--page", type=int, choices=range(7), default=0)
+    parser.add_argument("--page", type=int, choices=range(8), default=0)
     parser.add_argument("--screenshot", help="Save this application's rendered window for documentation")
     parser.add_argument("--quit-after", type=int, default=0, help="Exit after N seconds for packaging smoke tests")
     args = parser.parse_args()
@@ -1017,6 +1108,9 @@ def main():
         os.environ.setdefault('QT_X11_NO_MITSHM', '1')
         from .host_graphics import environment as graphics_environment
         os.environ.update(graphics_environment(is_wsl=True))
+        # WSLg does not pass the Windows display scale to X11 clients.
+        from .display_scale import qt_environment
+        os.environ.update(qt_environment())
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Infotainment Lab")
     app.setDesktopFileName('infotainment-lab')
@@ -1033,7 +1127,6 @@ def main():
         except RuntimeError as exc:
             QMessageBox.critical(None, 'Infotainment Lab', str(exc))
             return 1
-    if args.language: QSettings("InfotainmentLab", "Desktop").setValue("language", args.language)
     window = MainWindow(args.files)
     window.show_page(args.page)
     window.show()

@@ -59,6 +59,10 @@ class VehicleServices:
     tire_fr_bar: float = 2.9
     tire_rl_bar: float = 2.9
     tire_rr_bar: float = 2.9
+    power_level: float = 0.0
+    developer_mode: bool = False
+    service_mode: bool = False
+    factory_mode: bool = False
 
     @classmethod
     def parse(cls, value: dict) -> "VehicleServices":
@@ -111,48 +115,52 @@ class VehicleServices:
         return self.parse(self.as_dict() | patch)
 
 
-def _field(group, label, zh, kind="float", low=0, high=100, **extra):
-    return {"group": group, "label": label, "label_zh": zh, "type": kind,
+def _field(group, label, kind="float", low=0, high=100, **extra):
+    return {"group": group, "label": label, "type": kind,
             "min": low, "max": high, **extra}
 
 
 FIELD_SPECS = {
-    "climate_on": _field("climate", "Climate power", "空调电源", "bool"),
-    "cabin_temp_c": _field("climate", "Cabin temperature (°C)", "车内温度 (°C)", low=-40, high=70),
-    "outside_temp_c": _field("climate", "Outside temperature (°C)", "室外温度 (°C)", low=-50, high=70),
-    "driver_temp_c": _field("climate", "Driver temperature (°C)", "主驾设定温度 (°C)", low=15, high=30),
-    "passenger_temp_c": _field("climate", "Passenger temperature (°C)", "副驾设定温度 (°C)", low=15, high=30),
-    "fan_speed": _field("climate", "Fan speed", "风速", "int", 0, 10),
-    "ac_on": _field("climate", "A/C", "制冷", "bool"),
-    "rear_defrost": _field("climate", "Rear defrost request", "后窗除霜请求", "bool"),
-    "driver_door_open": _field("closures", "Driver door open", "主驾车门打开", "bool"),
-    "passenger_door_open": _field("closures", "Passenger door open", "副驾车门打开", "bool"),
-    "rear_left_door_open": _field("closures", "Rear left door open", "左后车门打开", "bool"),
-    "rear_right_door_open": _field("closures", "Rear right door open", "右后车门打开", "bool"),
-    "front_trunk_open": _field("closures", "Front trunk open", "前备箱打开", "bool"),
-    "rear_trunk_open": _field("closures", "Rear trunk open", "后备箱打开", "bool"),
-    "locked": _field("closures", "Doors locked", "车门锁定", "bool"),
-    "alarm_armed": _field("closures", "Vehicle alarm armed", "车辆报警已布防", "bool"),
-    "headlights": _field("lights", "Headlights (manual override)", "前照灯（手动覆盖）", "bool"),
-    "exterior_light_mode": _field("lights", "Exterior lights", "车外灯光", "str",
-                                  choices=('Off', 'Parking', 'On', 'Auto'), choices_zh=('关闭', '示宽灯', '开启', '自动')),
-    "ambient_dark": _field("lights", "Dark outside (Auto lights)", "环境较暗（自动车灯）", "bool"),
-    "high_beams": _field("lights", "High beams", "远光灯", "bool"),
-    "battery_percent": _field("energy", "Battery (%)", "电量 (%)"),
-    "charge_limit_pct": _field("energy", "Charge limit (%)", "充电上限 (%)", low=50, high=100),
-    "charging": _field("energy", "Charging", "充电中", "bool"),
-    "charge_power_kw": _field("energy", "Charging power (kW)", "充电功率 (kW)", low=0, high=350),
-    "volume_pct": _field("audio", "Volume (%)", "音量 (%)"),
-    "muted": _field("audio", "Mute", "静音", "bool"),
-    "latitude_deg": _field("navigation", "Latitude", "纬度", low=-90, high=90, nullable=True),
-    "longitude_deg": _field("navigation", "Longitude", "经度", low=-180, high=180, nullable=True),
-    "heading_deg": _field("navigation", "Heading (°)", "航向 (°)", low=0, high=360, nullable=True),
-    "nav_destination": _field("navigation", "Destination label", "目的地名称", "str"),
-    "nav_distance_km": _field("navigation", "Distance remaining (km)", "剩余距离 (km)", low=0, high=50000),
-    "nav_eta_min": _field("navigation", "Time remaining (min)", "剩余时间 (min)", low=0, high=100000),
-    **{f"tire_{wheel}_bar": _field("tires", f"{label} pressure (bar)", f"{zh}胎压 (bar)", low=0, high=5)
-       for wheel, label, zh in (("fl", "Front left", "左前"), ("fr", "Front right", "右前"),
-                               ("rl", "Rear left", "左后"), ("rr", "Rear right", "右后"))},
+    "climate_on": _field("climate", "Climate power", "bool"),
+    "cabin_temp_c": _field("climate", "Cabin temperature (°C)", low=-40, high=70),
+    "outside_temp_c": _field("climate", "Outside temperature (°C)", low=-50, high=70),
+    "driver_temp_c": _field("climate", "Driver temperature (°C)", low=15, high=30),
+    "passenger_temp_c": _field("climate", "Passenger temperature (°C)", low=15, high=30),
+    "fan_speed": _field("climate", "Fan speed", "int", 0, 10),
+    "ac_on": _field("climate", "A/C", "bool"),
+    "rear_defrost": _field("climate", "Rear defrost request", "bool"),
+    "driver_door_open": _field("closures", "Driver door open", "bool"),
+    "passenger_door_open": _field("closures", "Passenger door open", "bool"),
+    "rear_left_door_open": _field("closures", "Rear left door open", "bool"),
+    "rear_right_door_open": _field("closures", "Rear right door open", "bool"),
+    "front_trunk_open": _field("closures", "Front trunk open", "bool"),
+    "rear_trunk_open": _field("closures", "Rear trunk open", "bool"),
+    "locked": _field("closures", "Doors locked", "bool"),
+    "alarm_armed": _field("closures", "Vehicle alarm armed", "bool"),
+    "headlights": _field("lights", "Headlights (manual override)", "bool"),
+    "exterior_light_mode": _field("lights", "Exterior lights", "str",
+                                  choices=('Off', 'Parking', 'On', 'Auto')),
+    "ambient_dark": _field("lights", "Dark outside (Auto lights)", "bool"),
+    "high_beams": _field("lights", "High beams", "bool"),
+    "battery_percent": _field("energy", "Battery (%)"),
+    "charge_limit_pct": _field("energy", "Charge limit (%)", low=50, high=100),
+    "charging": _field("energy", "Charging", "bool"),
+    "charge_power_kw": _field("energy", "Charging power (kW)", low=0, high=350),
+    "power_level": _field("energy", "Power meter (kW, negative = regen)", low=-100, high=400),
+    "volume_pct": _field("audio", "Volume (%)"),
+    "muted": _field("audio", "Mute", "bool"),
+    "latitude_deg": _field("navigation", "Latitude", low=-90, high=90, nullable=True),
+    "longitude_deg": _field("navigation", "Longitude", low=-180, high=180, nullable=True),
+    "heading_deg": _field("navigation", "Heading (°)", low=0, high=360, nullable=True),
+    "nav_destination": _field("navigation", "Destination label", "str"),
+    "nav_distance_km": _field("navigation", "Distance remaining (km)", low=0, high=50000),
+    "nav_eta_min": _field("navigation", "Time remaining (min)", low=0, high=100000),
+    "developer_mode": _field("modes", "Developer mode", "bool"),
+    "service_mode": _field("modes", "Service mode", "bool"),
+    "factory_mode": _field("modes", "Factory mode", "bool"),
+    **{f"tire_{wheel}_bar": _field("tires", f"{label} pressure (bar)", low=0, high=5)
+       for wheel, label in (("fl", "Front left"), ("fr", "Front right"),
+                            ("rl", "Rear left"), ("rr", "Rear right"))},
 }
 
 CAPABILITIES = {
@@ -162,6 +170,7 @@ CAPABILITIES = {
     "energy": {"mode": "local-display", "detail": "Battery and charging telemetry; no battery or charging-station model."},
     "audio": {"mode": "host-backed", "detail": "Volume and mute for firmware audio streams on the host."},
     "navigation": {"mode": "local-display", "detail": "GPS, heading, destination and remaining trip metadata; offline NA imagery, route computation and live traffic remain unverified."},
+    "modes": {"mode": "local-display", "detail": "Developer, service and factory mode flags on the firmware displays; no vehicle-side unlock."},
     "tires": {"mode": "local-model", "detail": "Pressure values are stored locally; native TPMS units have not been verified."},
     "vehicle_hardware": {"mode": "unavailable", "detail": "Physical ECU/CAN, powertrain, charging equipment and vehicle sensors are not connected."},
     "account_services": {"mode": "unavailable", "detail": "Tesla account, phone key, cellular provisioning, payments and cloud-only services are not emulated."},
@@ -211,13 +220,24 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "charge_limit_pct": {"GUI_chargeLimitRequest": v.charge_limit_pct},
         "charging": {"VAPI_isCharging": v.charging, "GUI_chargeSessionActive": v.charging},
         "charge_power_kw": {"VAPI_chargerPower": v.charge_power_kw if v.charging else 0.0},
+        "power_level": {"VAPI_powerLevel": v.power_level},
         "volume_pct": {"GUI_audioVolume": v.volume_pct / 100 * volume_max},
         "muted": {"GUI_muteAudioRequest": v.muted},
         "nav_destination": {"GUI_navDestinationLocationName": v.nav_destination},
         "nav_distance_km": {"GUI_navMilesToNextDestination": v.nav_distance_km / 1.609344},
         "nav_eta_min": {"GUI_navSecondsToNextDestination": v.nav_eta_min * 60},
+        "developer_mode": {"GUI_developerMode": v.developer_mode},
+        "service_mode": {"GUI_serviceMode": v.service_mode},
+        "factory_mode": {"GUI_factoryMode": v.factory_mode},
         **{name: {} for name in ("tire_fl_bar", "tire_fr_bar", "tire_rl_bar", "tire_rr_bar")},
     }
+    # The charge screen keys off the gateway charge state and the port state as
+    # well as the session flags. Parked-car exports show GTW_chargeState as
+    # Disconnected (idle) or Complete; Charging is the matching active state.
+    result["charging"]["GTW_chargeState"] = "Charging" if v.charging else "Disconnected"
+    result["charging"]["VAPI_chargePortCoverClosed"] = not v.charging
+    if v.charging:
+        result["charging"]["VAPI_chargePortLatch"] = "Engaged"
     for field in closure_fields:
         result[field]['VAPI_doorState'] = door_mask
     if v.latitude_deg is not None and v.longitude_deg is not None:
@@ -241,6 +261,9 @@ REQUEST_FIELDS = {
     "volume_pct": "GUI_audioVolume",
     "exterior_light_mode": "GUI_lightSwitchRequest",
     "alarm_armed": "GUI_alarmOnRequest",
+    "power_level": "VAPI_powerLevel",
+    "developer_mode": "GUI_developerMode", "service_mode": "GUI_serviceMode",
+    "factory_mode": "GUI_factoryMode",
 }
 
 
@@ -328,7 +351,7 @@ PREFERENCES = (
 # Playback belongs to the center display. Never send stale instrument metadata
 # back into the active player. Keep navigation and view-local state separate.
 CENTER_CHANNELS = (
-    'GUI_serviceMode',
+    'GUI_serviceMode', 'GUI_developerMode', 'GUI_factoryMode',
     'GUI_nowPlayingTitle', 'GUI_nowPlayingArtist', 'GUI_nowPlayingAlbum',
     'GUI_nowPlayingStation', 'GUI_nowPlayingDuration', 'GUI_nowPlayingElapsed',
     'GUI_nowPlayingSeekable', 'GUI_mediaCurrentStatus', 'GUI_mediaNowPlayingSource',
@@ -443,6 +466,7 @@ class DisplayWriter:
         self.cache = {}
         self.supported = {}
         self.feedback = {}
+        self.skip = ()  # names owned by a user override; other writers leave them alone
         self.batch = batch
 
     def read(self, name):
@@ -475,6 +499,10 @@ class DisplayWriter:
         return bool(ok), "" if ok and str(raw) == "" else decode_value(raw)
 
     def apply(self, groups, verify_cached=False):
+        if self.skip:
+            groups = {field: values if field == 'config' else
+                      {name: value for name, value in values.items() if name not in self.skip}
+                      for field, values in groups.items()}
         if self.batch:
             return self._apply_batch(groups, verify_cached)
         report, details = {}, {}

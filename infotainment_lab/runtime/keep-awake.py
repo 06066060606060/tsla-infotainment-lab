@@ -19,6 +19,7 @@ from vehicle_services import (VehicleServices, REQUEST_FIELDS, CAPABILITIES, Dis
                               MEDIA_NETWORK_SERVICES, media_network_values)
 from vehicle_services import BodyRequestRouter, BODY_REQUESTS, decode_service_request
 from display_bus import connect, call_many
+from config_csv import CAR_CONFIG_EXTRA
 
 bus = connect(os.environ['DBUS_SESSION_BUS_ADDRESS'])
 state = Path(os.environ['TESLA_NATIVE_STATE'])
@@ -94,10 +95,32 @@ def typed(value):
     return dbus.String(value, variant_level=1)
 
 
+def car_config():
+    """Names the firmware restarts its UI for: the profile's keys, the known extras and any the supervisor learned."""
+    learned = read_json('car-config-learned.json', [])
+    return set(vehicle_profile) | CAR_CONFIG_EXTRA | set(learned if isinstance(learned, list) else [])
+
+
+def app_owned():
+    """Names the app's own writers keep current (vehicle services, drive controls, indicators, network, keep-alive).
+
+    An imported value for one of these must not displace the app's model: Vehicle services would stop working.
+    """
+    names = set(awake) | set(network_values(snapshot)) | set(media_network_values(snapshot)) | set(indicator_values('off'))
+    names |= set(speed_display_values(0, 'Miles'))
+    for groups in (display_values(model), driving_values(controls)):
+        for group in groups.values(): names |= set(group)
+    return names
+
+
 def apply_vehicle_profile(interface):
     """Write the named MCU2 values once whenever a display service starts."""
     result = {}
-    for name, value in vehicle_profile.items():
+    # A user override of a profile-owned name replaces the profile value, so the
+    # two writers agree. Otherwise each display start would flip the value back
+    # and the firmware would restart its UI until the supervisor gives up.
+    car = car_config()
+    for name, value in {**vehicle_profile, **{n: v for n, v in config_values.items() if n in car}}.items():
         try:
             result[name] = 'accepted' if interface.DataSetValueRequest(name, typed(value), timeout=1) else 'unsupported'
         except dbus.DBusException as exc:
@@ -125,12 +148,10 @@ def network_values(current):
 
 threading.Thread(target=monitor, daemon=True).start()
 time.sleep(float(os.environ.get('TESLA_NATIVE_STATE_DELAY', '10')))
-awake = {'GUI_enableDisplayKeepAlive': True, 'VAPI_driverPresent': True,
-         'VAPI_icLCDOn': True, 'VAPI_icBacklightOn': True, 'VAPI_vehicleInAccessoryPlus': True,
-         'VAPI_carType': os.environ.get('TESLA_NATIVE_CAR_TYPE', '3'),
+# The driver, accessory-plus and display keep-alive/LCD/backlight values follow
+# "Car off" (simulation rails); forcing them here kept the screens awake.
+awake = {'VAPI_carType': os.environ.get('TESLA_NATIVE_CAR_TYPE', '3'),
          'GUI_audioReady': True, 'GUI_serviceModeAudioResetNeeded': False}
-if os.environ.get('TESLA_NATIVE_CAR_TYPE') in ('ModelS', 'ModelX'):
-    awake |= {'VAPI_driveRailOn': True, 'VAPI_accRailOn': True}
 writers, owners, request_baseline = {}, {}, {}
 media_writers, media_owners, media_network_report = {}, {}, {}
 controls = Simulation()
@@ -139,6 +160,7 @@ control_errors = {}
 vehicle_profile_report = {}
 volume_max, distance_units = {}, {}
 config_stamp = None
+config_values, config_values_stamp, config_report, config_skip, config_sent = {}, None, {}, set(), {}
 next_inventory = next_requests = next_services = next_slow = next_network = next_report = 0
 last_controls = None
 last_gps = None
@@ -151,6 +173,23 @@ body_router = BodyRequestRouter()
 while True:
     tick = time.monotonic()
     try:
+        # Named DataValue overrides from the desktop config tab. Other writers
+        # skip these names so the override is not undone on the next tick.
+        try:
+            stamp = (state / 'config-values.json').stat().st_mtime_ns
+            if stamp != config_values_stamp:
+                loaded = read_json('config-values.json', {})
+                if isinstance(loaded, dict):
+                    config_values, config_values_stamp = loaded, stamp
+                    car = car_config()
+                    config_skip.clear()
+                    explicit = read_json('config-explicit.json', [])
+                    config_skip.update(name for name in loaded if name in car or name in explicit)  # car config and deliberate edits displace an app writer
+        except FileNotFoundError:
+            pass
+        for writer in writers.values():
+            writer.skip = config_skip
+
         if tick >= next_inventory:
             next_inventory = tick + .5
             for service in MEDIA_NETWORK_SERVICES:
@@ -307,6 +346,20 @@ while True:
                     writer.apply({'awake': awake}, verify_cached=True)
                 if tick >= next_network:
                     writer.apply({'network': network_values(snapshot)}, verify_cached=True)
+                # Write each override once per service. Car-config names (the vehicle
+                # profile's keys) are never written live: the firmware restarts its UI
+                # for each changed one. They reach the displays through the persisted
+                # store and the profile write at the next start.
+                sent, car = config_sent.setdefault(service, {}), car_config()
+                todo = {name: value for name, value in config_values.items()
+                        if name not in car and (name not in sent or sent[name] != value)}
+                if todo:
+                    owned = app_owned() - set(read_json('config-explicit.json', []))  # a value the user set wins over the app's model
+                    sent.update(todo)  # also the ones left to the app, so this is not recomputed every tick
+                    todo = {name: value for name, value in todo.items() if name not in owned}
+                if todo:
+                    _, detail = writer.apply({'config': todo})
+                    config_report.setdefault(service, {}).update(detail['config'])
                 errors.pop(service, None)
             except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
                 errors[service] = str(exc)
@@ -342,6 +395,9 @@ while True:
                 'vehicle_profile': vehicle_profile_report,
                 'body_requests': body_router.report,
             })
+            atomic_json('config-values-feedback.json', {
+                'requested': config_values, 'updated_at': now,
+                'firmware': {name: statuses for name, statuses in config_report.items() if name in writers}})
             next_report = tick + .5
     except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
         print(str(exc), flush=True)

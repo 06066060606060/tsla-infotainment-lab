@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — Console, vehicle config and Service Mode
+
+- Fixed the Service Mode panel reloading forever after a WSL restart. Runtime Setup now enables the AppArmor service and, on WSL, mounts securityfs at boot, so the lab's profiles are loaded again at every boot; without them `QtCarDvServer` rejects QtCar, the panel never learns that Service Mode is on and its watchdog keeps reloading it. A process that starts without its profile is now logged by name.
+- **Display scaling on WSL.** The lab reads the Windows display scale and draws at that size instead of 100%. The panel scales through Qt. The center and instrument displays start the firmware at a larger window scale (`--window 0.9` instead of `0.6` at 150%) on a matching larger Xephyr screen or QEMU guest output, so text stays sharp and touches stay aligned; the size is reduced to fit the desktop. QEMU mode needs a rebuilt guest image. `INFOTAINMENT_LAB_SCALE` overrides the factor. The WSLg fractional-scaling setting suggested earlier blurred windows and enlarged the cursor; `python3 -m infotainment_lab.display_scale --disable-wslg-scaling` removes it.
+- **Alerts instead of popups.** Refused or unknown configuration keys now raise an alert listed under Diagnostics › Alerts, with a warning icon and count on the Diagnostics sidebar entry, instead of a modal dialog. Adding a personal key by hand (for example `GUI_valetModePassword`) is refused right away with an alert naming the reason.
+- **Alerts say why the firmware restarted.** Each car-config restart is recorded (`config-restarts.json`) and listed as an alert naming the display and the values it restarted for; Apply-and-restart and values reset after a restart loop are listed too, and the status banner names the values while the restart runs. The Alerts card stays in place with an empty state after Clear all, and alerts are plain rows that scroll with the page instead of a nested list.
+- **Firmware cannot reach Tesla.** Names under `tesla.com`, `teslamotors.com`, `tesla.services` and `tesla.cn` no longer resolve for any firmware process or browser the lab starts. A preloaded shim (`native-netguard`) makes those lookups fail in QtCar, the cluster, Spotify, the media adapter, the data-value server, the visualization and `media-webapp-server`, and each log records `netguard: blocked lookup of …`. Chromium refuses the same domains through its resolver rules. The local `firmware-media` names still map to loopback. Other traffic, such as Google Maps tiles, is unchanged. Connections to literal IP addresses are not intercepted.
+- **Power meter in kW.** The Drive tab power meter now spans -100 kW (regen) to +400 kW (drive) in 1 kW steps and writes that kW value to `VAPI_powerLevel`, instead of a -1 to 1 level.
+- **Vehicle controls in tabs.** Drive, Wheel buttons and the vehicle-service groups now share one tab bar instead of stacked sections. The power meter (`VAPI_powerLevel`) is a slider on the Drive tab.
+- **Car off is not Park.** Car off now also clears `VAPI_driverPresent` and `VAPI_vehicleInAccessoryPlus`, which keep-awake used to force on; Park leaves them on. Charging also sets the charge-port cover and latch (`Engaged`) values. Enum values are read from the firmware libraries, not yet observed on a running UI; check the per-field firmware response.
+- **Charging sets the gateway charge state.** The Charging control now also writes `GTW_chargeState` (`Charging`, or `Disconnected` when off), which the lab never set before. Idle values come from parked-car exports; `Charging` itself is not yet observed on a running UI, so check the per-field firmware response.
+- **Car off lets the screens sleep.** keep-awake no longer forces `GUI_enableDisplayKeepAlive`, `VAPI_icLCDOn` and `VAPI_icBacklightOn` on every two seconds; they now follow Car off with the other power values, so the firmware sees the car as off instead of being held awake. Car off also shifts to Park and zeroes speed and accelerator, and the Drive feedback line reports the firmware's response for these values as Power.
+- **Full reset.** A Full reset button on the Device page, next to QEMU boot check, stops the session and deletes the cached session, engine copy, mount points, library index and saved device settings, like a first import. Firmware, map and QEMU guest files are never touched.
+- Fixed Full reset stopping with "A firmware image is still mounted" when a Console shell or leftover process held the mount. Stop and Full reset now unmount the image themselves, lazily if it is busy (safe because it is read-only), and Full reset still never deletes through a mount it could not release. Starting after the FUSE daemon died clears the dead mount and mounts the image again.
+- Fixed `pip install -e '.[dev]'` failing on two top-level packages; only `infotainment_lab` is packaged.
+- **Documentation.** The README and its links now point to this repository and cover the Console, Vehicle config, Alerts, Service Mode, network isolation, Car off and the power meter. A new [vehicle configuration guide](docs/vehicle-config.md) describes imports, restarts and alerts, and the [compatibility matrix](docs/compatibility.md) is brought up to date.
+- **A Console tab.** A terminal on a real pty, with Tab completion, history, Ctrl+C and a blinking caret. On the native Linux/WSL engine it opens a shell inside the running CID's firmware root (read-only, through a user namespace). On the QEMU engine it connects over SSH to the guest through a loopback-only forward (`127.0.0.1:2222`).
+- Fixed the QEMU Console opening a plain login on the Debian guest instead of the CID. Connect now enters the firmware image mounted at `/firmware` in the guest (read-only, through a user namespace), as the native engine does; if the image is not mounted it says so and leaves you in the guest shell.
+- **One-click SSH key.** Set up SSH key (or the first Connect) creates a lab-owned ed25519 key and authorizes it in the running guest through the guest agent, then confirms it. Guest images built with `scripts/build-virtual-guest.py` include an SSH server with key-only login; older images need a rebuild.
+- Works from Windows through WSL2: key setup runs as a backend action and the shell runs inside the distribution.
+- **A new configuration import starts from the defaults.** Importing a CSV replaces the previous configuration instead of merging with it: keys the old file set that the new one lacks are removed, and default keys it lacks go back to their default value, so Apply writes those resets too. Values already applied with the same value are not sent again. Editing a value or adding a key by hand still changes only that key.
+- **Configuration imports withhold personal data.** Account logins, passwords and PINs, keys, device and network identifiers, and locations in a vehicle dump are never imported, stored or written; the import report lists how many were withheld and the session store refuses them. Live display and power state is listed but never written.
+- Fixed a configuration import driving the displays with another car's live readings. Dumps that repeat each name (joined exports) turned telemetry such as `POWER_centerDisplayState` into pending writes, which kept the center display power-cycling. Repeated live values are now listed only, like single ones.
+- Fixed vehicle dumps crashing the session. A dump that sets another UI language makes the firmware restart itself, and it sometimes aborts or segfaults while doing so; these are now handled as configuration restarts. Language settings that contradict each other (for example English language with a Norwegian manual language) are dropped after three restarts instead of looping, and are listed as conflicts. A Model 3 configuration (`VAPI_carType` `Model3`) can no longer be imported for an image with only the Model S/X interface: the import is refused with a message instead of crashing the center display. Restart also works again after a session has failed.
+- A `ModelS2` (refreshed Model S) `VAPI_carType` is kept by the session's state writer instead of being reset to the default.
+- **Service Mode panel (experimental).** The Service card no longer waits for a browser that was never started: the lab now runs the firmware's own `service-ui` backend and its `chromium-odin` window, as the vehicle does. The backend runs in its own unprivileged network namespace, which gives it the vehicle-network address it requires without changing the host network; its page is relayed to `localhost:8000`, and the firmware's `QtCarDvServer` supplies its vehicle values. Rerun Runtime Setup (or reload the AppArmor profile) so SpotifyServer and ChromiumAdapter accept the data-value server. Its token and identity checks are unchanged, and no diagnostic engine or vehicle link is provided, so functions that need them stay unavailable.
+- **Service Mode task catalogue (experimental).** The Service panel now has an Odin engine to talk to: a lab stand-in (`runtime/odin-engine.py`) answers the firmware `service-ui` backend's D-Bus calls (`com.tesla.Odin`) and engine websocket. The panel lists the image's own task catalogue (691 tasks on the 2026.8.3 MCU2 image), gateway-config names, maintenance options and an empty service history. Running a task always ends as a routine error that says no vehicle is attached; config values are placeholders and read-only. The firmware `service-ui` itself is unchanged.
+- Fixed the native media card loading forever when the firmware's `media-webapp-server` rejected a flag (such as `-secondary_port`) and exited. The lab now reads the server's `-h` output and passes only the flags that firmware defines.
+- Fixed the native Service Mode interface opening outside the center screen. The center window was positioned only once at startup; the supervisor now checks every two seconds, pins the main window to the origin and moves any later firmware window (Service Mode, dialogs) back inside the screen. Browser windows are untouched.
+
 ## Unreleased — CAN channels and gateway emulation
 
 - **A local CAN service.** The vehicle's own channel names — VEH, CHASSIS and PARTY — over SocketCAN `vcan` interfaces, with a software hub fallback when the kernel module or privileges are missing. Frames are traced per channel and decoded against a frame table.
@@ -8,27 +38,12 @@
 - **Frame definitions and a `.dbc` reader.** The built-in `LAB_*` layouts carry the existing simulator and vehicle-service state; your own database can replace them at runtime.
 - The gateway models behaviour only. It contains no vendor protocol, key, certificate or authentication scheme, and reaches no vehicle.
 
-### 中文
-
-- **本地 CAN 服务。** 通过 SocketCAN `vcan` 提供 VEH、CHASSIS、PARTY 三条通道；缺少内核模块或权限时自动改用软件总线。可按通道记录报文并解码。
-- **模拟车辆网关。** 按方向配置路由与标识符过滤，车机侧写入默认锁定，需完成本地 HMAC 握手，并执行校验和与速率限制。被接受的空调与灯光请求会回写到车辆服务状态。
-- **新增 CAN 与网关面板。** 启动服务、查看锁定状态与各通道计数、解锁、经由网关或直接向通道发送报文，并查看最近报文的解码结果。
-- **报文定义与 `.dbc` 读取。** 内置 `LAB_*` 定义承载现有模拟与车辆服务状态，也可在运行时载入自有数据库。
-- 网关仅为行为模型，不包含任何厂商协议、密钥、证书或认证方案，也不连接真实车辆。
-
 ## 0.5.1 — 2026-09-16 · Startup and display fixes
 
 - Fixed a startup error that could close the native Linux/WSL session before either screen appeared.
 - Batched display updates so driving inputs and shared preferences spend less time waiting on the center and instrument screens.
 - Fixed QEMU screen power management stalling the center display after about ten minutes without mouse or keyboard input.
 - Reduced the time large QEMU previews occupy the control connection. Failed display updates now report an error and retry instead of retaining a successful status.
-
-### 中文
-
-- 修复原生 Linux / WSL 会话启动时缺少模块、双屏无法打开的问题。
-- 改为批量更新显示数据，减少驾驶输入和共享设置在中控与仪表之间的等待。
-- 修复 QEMU 中控在约十分钟没有鼠标或键盘操作后卡顿的问题。
-- 缩短 QEMU 大幅预览图占用控制连接的时间；显示更新失败时会报告错误并重试，不再保留之前的成功状态。
 
 ## 0.5.0 — 2026-09-16 · Material desktop & QEMU
 
@@ -39,15 +54,6 @@
 - **Smoother WSLg audio.** Buffered output handles playback, releases the desktop stream during silence, and reconnects when sound resumes.
 - **Small fixes that help day to day.** Correct MPH/km/h labels, accurate gear feedback, and a held camera frame when replay is paused or finishes.
 
-### 中文
-
-- **全新的 Qt 界面。** Material 3 风格、明暗主题、三种强调色和适合小窗口的紧凑导航。外观与语言设置自动保存，左上角 Logo 已移除。
-- **在设备管理器中使用 QEMU。** 选择客体目录后即可启动、停止虚拟机，预览双屏，或从工具栏打开中控和仪表窗口。Debian 客体使用替代 Linux 内核，固件以只读方式挂载。
-- **双屏 GPU 加速。** MCU2 桌面使用 VirGL，独立仪表窗口通过 VirtualGL 共用 GPU。
-- **控制入口集中到 Qt 面板。** QEMU 模式下可操作驾驶输入、方向盘按钮、浏览器卡片、摄像头和行车记录仪回放。
-- **改善 WSLg 音频。** 播放采用缓冲输出，静音时释放桌面音频流，有声音后自动恢复。
-- **修复日常使用中的小问题。** 仪表正确显示 MPH/km/h，挡位反馈更准确，回放暂停或结束后保留最后一帧摄像头画面。
-
 ## 0.4.4 — 2026-09-10
 
 - Fixed the native media card remaining at `Audio Initializing` by publishing `GUI_audioReady=true`, a valid `Base` audio type and a cleared Service Mode audio-reset state to both displays.
@@ -57,15 +63,6 @@
 - Added the GStreamer playback runtime and firmware ALSA aliases used by Toybox and chime fallbacks, including `fart`, so enabling audio readiness no longer exposes a missing playback executable or device.
 - Connected replay motion to native ApViz with signed speed, playback gear, road-wheel angle and calculated yaw rate; Model X steering and forward/reverse animation now follow the committed camera frame, with the firmware road-wheel convention applied to reverse-camera guide lines.
 
-### 中文
-
-- 修复原生媒体卡片停留在 `Audio Initializing`：向中控和仪表发布 `GUI_audioReady=true`、有效的 `Base` 音响类型，并清除 Service Mode 音频重置状态。
-- QtCar、QtCarCluster、SpotifyServer 和 ChromiumAdapter 现在以固件要求的 AppArmor peer 名称启动。
-- 将持久化 Debian/WSL AppArmor profile 安装接入“运行环境安装”，重启后已验证 SpotifyServer 和 ChromiumAdapter 安全标签匹配成功。
-- 原生媒体健康状态现为 `services-running`，WSLg 音量与静音仍与中控、仪表同步。
-- 补齐 Toybox 和提示音回退路径所需的 GStreamer 运行环境及 `fart` 等固件 ALSA 设备别名，避免音频就绪后调用缺失的播放器或设备。
-- 将回放运动数据接入原生 ApViz：发布带方向车速、回放挡位、路轮角和计算后的横摆角速度，使 Model X 转向及前进/倒车动画跟随已提交的摄像头帧，并按固件路轮角约定修正倒车轨迹线方向。
-
 ## 0.4.3 — 2026-09-10
 
 - Added a persistent Model X MCU2 vehicle profile and applies it to both display services whenever they start.
@@ -73,12 +70,6 @@
 - Added per-signal application results to runtime feedback, so unsupported or rejected profile values are visible instead of silently ignored.
 - Connected exterior color, interior trim and dual-motor state to the native 3D ego model; the model now receives the same profile as both displays.
 - Verified all 32 profile signals on both center and instrument displays after a clean runtime restart.
-
-### 中文
-
-- 新增持久化 Model X MCU2 车辆配置，中控和仪表服务每次启动时都会自动应用。
-- 按 2026.26.6.1 服务提供的有效枚举选择较新配置，包括 P100D、TeslaAdaptive 悬架、TeslaAP3、永磁前电机、SEMCO 倒车摄像头、Valeo5 泊车辅助、Model X 雷达位置、可折叠后排约束系统和 21 英寸 Twin Turbine 轮毂。
-- 补齐车漆、内饰和双电机状态到原生 3D 车模的联动；运行状态记录每项接受结果，干净重启后验证中控和仪表两端各 32 项全部接受。
 
 ## 0.4.2 — 2026-09-10
 
@@ -88,31 +79,16 @@
 - Added a vehicle-alarm toggle to the Doors page for armed-state UI testing. It affects only this application's private display services and never sends a disarm request to vehicle hardware.
 - Full diagnostic gateway services and Service Mode Plus remain unavailable in the local lab.
 
-### 中文
-
-- 增加本地车辆报警状态，默认向固件发布原生 `VAPI_alarmStatus=Disarmed`，修复无效状态阻止正常进入 Service Mode 的问题。
-- 已在真实运行的 MCU2 中控验证正常输入代码后进入 Service Mode；没有修改访问码、网关或认证检查。
-- Service Mode 状态由中控同步到仪表，仪表显示原生 Service Mode 画面；车门页可切换本地报警布防状态。
-- 该状态只存在于应用私有显示服务，不会向真实车辆发送解除报警命令；完整诊断网关和 Service Mode Plus 仍不可用。
-
 ## 0.4.1 — 2026-09-10
 
 - Fixed striped and scrambled native text by restoring OpenGL unpack alignment after each 3D texture upload, including failed uploads.
-- Resolve center, cluster and firmware browser fonts from the selected image, with a private font cache and the supplied CJK selection rules. No firmware fonts are bundled or installed into the host.
+- Resolve center, cluster and firmware browser fonts from the selected image, with a private font cache. No firmware fonts are bundled or installed into the host.
 - Added steering-wheel volume hold/repeat with release and focus-loss cancellation; corrected shared left/right/hazard indicator phases.
 - Connected six door/trunk position flags to both displays and the native 3D view. Center lock/unlock and supported closure requests update the local model.
 - Added Off, Parking, On and Auto light modes, a simulated dark environment, and consistent manual-light controls.
 - Expanded Santa/theme/wheel preference synchronization and center-to-cluster playback metadata. Added native media process recovery, connection diagnostics and the scoped media-browser environment.
-- Updated English and Mandarin setup instructions: users must supply their own compatible Firmware Dump. Firmware, extraction tools and dump/export tutorials are not provided.
+- Updated setup instructions: users must supply their own compatible Firmware Dump. Firmware, extraction tools and dump/export tutorials are not provided.
 - Still unresolved: native Spotify login/playback and complete media-service confinement. Service Mode manual entry remains unverified. This update does not add physical vehicle or cloud services.
-
-### 中文
-
-- 修复 3D 纹理上传后引起的文字花字，中控、仪表和固件浏览器从当前固件读取字体，字体缓存独立保存。
-- 补齐方向盘音量长按、转向灯闪烁、六个车门／备箱位置、锁车请求和四种灯光模式的本地同步。
-- 改进 Santa 与偏好同步、播放信息转发、媒体服务恢复及错误诊断。
-- 明确需要用户自备 Firmware Dump；不提供固件、提取工具或导出教程。
-- Spotify 原生登录／播放和完整服务隔离仍未修复，Service Mode 手动入口尚未验证。
 
 ## 0.4.0 — 2026-09-09
 
@@ -120,7 +96,7 @@
 - Corrected embedded pointer coordinates, drag capture, wheel delivery and physical keyboard routing.
 - Connected embedded dashcam driving data to the same clock as the camera video, with pause, seek, playback speed, looping and manual takeover. Reopening a session holds the preview in Park until Play.
 - Added local climate, body, lights, energy, audio and navigation controls with per-field firmware readback. Both displays share driving data and reconcile supported preferences in either direction.
-- Added bilingual control pages, replay and X11 integration tests, and a generator for a clearly labelled public demo recording.
+- Added control pages, replay and X11 integration tests, and a generator for a clearly labelled public demo recording.
 
 ## 0.3.0 — 2026-09-09
 
@@ -135,7 +111,7 @@
 - Double-click Windows launcher for the native Linux GUI, included with the Linux bundle.
 - Direct WSLg desktop and Start-menu shortcut installer, startup logs and visible launch errors.
 - Reopening the application activates its existing control panel; smaller windows can scroll.
-- Corrected desktop application identity and simplified compatibility wording in both READMEs.
+- Corrected desktop application identity and simplified compatibility wording in the README.
 
 ## 0.2.0 — 2026-09-09
 
@@ -143,11 +119,11 @@
 - Actual center and instrument display captures in a five-second overview.
 - Native toolbar for display focus, restart, PNG capture, controls and camera.
 - Preflight launch gating, guided setup, persistent errors and busy indicators.
-- Scrollable layouts, keyboard shortcuts, matching English/Mandarin documentation and refreshed screenshots.
+- Scrollable layouts, keyboard shortcuts, matching documentation and refreshed screenshots.
 
 ## 0.1.0 — 2026-09-09
 
-- Native Qt workbench with English and Mandarin interfaces.
+- Native Qt workbench.
 - Local firmware library with drag and drop, build checks and read-only mounts.
 - Standalone MCU2 center/instrument session with AMD WSLg graphics and embedded Chromium.
 - Private display simulator for gear, speed, pedals, steering and turn signals.
