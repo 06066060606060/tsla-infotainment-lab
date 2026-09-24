@@ -17,6 +17,9 @@ dev = ["pytest==8.4.2", "pyinstaller==6.16.0"]
 [project.gui-scripts]
 infotainment-lab = "infotainment_lab.application:main"
 
+[tool.setuptools.packages.find]
+include = ["infotainment_lab*"]
+
 [tool.setuptools.package-data]
 infotainment_lab = ["runtime/*", "*.json", "assets/*.svg"]
 

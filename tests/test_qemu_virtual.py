@@ -21,6 +21,25 @@ def test_virtual_launch_keeps_firmware_read_only_and_has_no_host_shares(tmp_path
     assert 'virtio-vga-gl,max_outputs=1,xres=720,yres=1152' in args
 
 
+def test_scaled_launch_sizes_both_guest_outputs(tmp_path):
+    files = {name: tmp_path / name for name in ('disk', 'kernel', 'initrd', 'firmware')}
+    for path in files.values():
+        path.write_bytes(b'hsqs' + bytes(256))
+    args = launch_arguments(tmp_path, 'id', **files, display_scale=1.5)
+    assert 'virtio-vga-gl,max_outputs=1,xres=1080,yres=1728' in args
+    assert 'virtio-gpu-pci,id=cluster-gpu,addr=0x08,max_outputs=1,xres=1920,yres=720' in args
+    with pytest.raises(ValueError):
+        launch_arguments(tmp_path, 'id', **files, display_scale=0.5)
+
+
+def test_guest_ssh_is_forwarded_on_loopback_only(tmp_path):
+    files = {name: tmp_path / name for name in ('disk', 'kernel', 'initrd', 'firmware')}
+    for path in files.values():
+        path.write_bytes(b'hsqs' + bytes(256))
+    netdev = launch_arguments(tmp_path, 'id', **files)[launch_arguments(tmp_path, 'id', **files).index('-netdev') + 1]
+    assert 'hostfwd=tcp:127.0.0.1:2222-:22' in netdev
+
+
 def test_status_does_not_reuse_a_previous_boot_or_dead_session(tmp_path):
     from infotainment_lab.guest_status import session_status
     path = tmp_path / 'status.json'

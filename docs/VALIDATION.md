@@ -27,7 +27,7 @@
 
 - Linux: 230 tests passed. Windows: 205 passed, 25 Linux-only checks skipped.
 - The upper-left wordmark is removed in both wide and compact layouts. Native
-  Qt screenshots were regenerated in English and Simplified Chinese.
+  Qt screenshots were regenerated.
 - MCU2 2026.26.6.1 runs on the replacement-kernel QEMU guest. Center, instrument
   and firmware Godot visualization renderers report AMD-backed VirGL. The
   instruments use VirtualGL with their independent X11 window.
@@ -53,8 +53,8 @@
   A compiled regression harness checks alignments 1, 2, 4 and 8, including upload errors.
 - Both running Qt processes mapped Universal Sans font files from the selected
   firmware mount. A session-only Fontconfig configuration points to that image,
-  its supplied CJK rules and a private cache. `fc-match` selected Universal Sans
-  Text 530 for the named family and Noto Sans CJK SC for simplified Chinese.
+  its supplied font rules and a private cache. `fc-match` selected Universal Sans
+  Text 530 for the named family.
   No font payload was copied into the repository or installed into host font folders.
   Fresh native captures show readable [center controls](screenshots/native-fonts-center.png)
   and [cluster warning text alongside the 3D car](screenshots/native-fonts-cluster.png).
@@ -75,7 +75,7 @@
   conflicts and bounded service recovery.
 - After the desktop was unlocked, clicking Santa in the actual center window
   produced the sleigh, reindeer, tree, snowman and falling snow in the Windows
-  instrument window. The Chinese wheel panel loaded. Volume + and Volume −
+  instrument window. The wheel panel loaded. Volume + and Volume −
   changed the shared volume by five percentage points and restored it; a native
   instrument volume popup was captured alongside Santa.
   Switching Santa off in the center restored the ordinary car visualization.
@@ -84,7 +84,7 @@
   original level was restored. Left, right, hazard and Off selections produced
   the expected steady direction and alternating lamp states on both displays.
   Lamp values were sampled twice to exclude reads straddling a phase transition.
-  Selecting Hazards in the reopened Chinese desktop panel displayed both green
+  Selecting Hazards in the reopened desktop panel displayed both green
   arrows in the actual Windows instrument window; [native capture](screenshots/cluster-indicators.png).
 - The supplied music web app includes Spotify, Apple Music, Amazon Music,
   Audible and other player assets. The bundled Chromium directory includes
@@ -149,10 +149,10 @@ Version 0.4.0 passes 96 source tests on Debian. Windows passes 82 and skips 14 L
 
 | Check | Evidence / result |
 | --- | --- |
-| Native launcher | [English](screenshots/workspace-en.png), [Mandarin](screenshots/workspace-zh.png), [packaged Linux](screenshots/packaged-linux.png), [optional Windows client](screenshots/packaged-windows.png). |
+| Native launcher | [English](screenshots/workspace-en.png), [packaged Linux](screenshots/packaged-linux.png), [optional Windows client](screenshots/packaged-windows.png). |
 | Device tools | Live overview loaded both actual displays; Center/Cluster focus succeeded; Capture exported 720×1152 and 1280×480 PNGs; Restart and Stop/Start completed through native buttons. |
 | Windows launch | Opened the installed desktop shortcut through Windows and observed the Linux GUI window. Opening it again kept the same primary process. The CMD entry point also completed its launch smoke test without error. |
-| Window sizing | Reviewed at 1360×920 in English and Mandarin, and 1080×780 with scrollable content. |
+| Window sizing | Reviewed at 1360×920 and 1080×780 with scrollable content. |
 | Graphics | `D3D12 (AMD Radeon(TM) Graphics)` with hardware acceleration reported by the nested display. |
 | Instrument visualization | Actual parked Model S 3D display; [screenshot](screenshots/cluster.png). |
 | Simulator | [Control panel](screenshots/simulator-en.png) and [per-display acknowledgements](screenshots/simulation-proof.json). Display-speed and vehicle-speed fields use different units. |

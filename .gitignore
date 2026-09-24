@@ -29,3 +29,13 @@ session/
 *.mov
 *.mkv
 *.rgb
+# Vehicle dumps and firmware extracts (never commit)
+dumps/
+export*.csv
+models.csv
+internal.dat*
+*.mcu
+squashfs-root/
+*:Zone.Identifier
+odin-mock/
+.claude/worktrees/

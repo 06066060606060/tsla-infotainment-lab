@@ -40,6 +40,10 @@ def icon(name, color=None):
         painter.drawEllipse(QRectF(3, 3, 18, 18))
         painter.drawLine(12, 10, 12, 17)
         painter.drawPoint(12, 7)
+    elif name == 'warning':
+        painter.drawPolyline([QPointF(12, 3), QPointF(22, 20), QPointF(2, 20), QPointF(12, 3)])
+        painter.drawLine(12, 9, 12, 14)
+        painter.drawPoint(12, 17)
     elif name == 'add':
         painter.drawLine(12, 5, 12, 19)
         painter.drawLine(5, 12, 19, 12)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import io
 import importlib.util
 import json
@@ -26,6 +27,8 @@ from simulation import Simulation
 from camera_source import source_config, camera_health, FRAME_BYTES, WIDTH, HEIGHT
 from browser import MODES, browser_url, media_health
 from replay import replay_request, manual_takeover, controls_lock
+import config_csv
+import display_scale
 from vehicle_services import VehicleServices, CAPABILITIES
 from host_graphics import selection as graphics_selection
 
@@ -33,7 +36,7 @@ DATA = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) 
 UNIT = "tsla-infotainment-lab.service"
 PACKAGES = ["squashfs-tools", "squashfuse", "fuse3", "gcc", "binutils", "libx11-dev", "python3-dbus", "python3-gi",
             "dbus-x11", "xserver-xephyr", "x11-utils", "xdotool", "mesa-utils", "pulseaudio-utils",
-            "alsa-utils", "libasound2-plugins", "libnss3", "libgbm1", "libatk-bridge2.0-0", "pkexec", "fonts-noto-cjk",
+            "alsa-utils", "libasound2-plugins", "libnss3", "libgbm1", "libatk-bridge2.0-0", "pkexec",
             "libxkbcommon-x11-0", "libxcb-cursor0", "libegl1", "libgl1", "libglx-mesa0", "python3-pil", "ffmpeg",
             "apparmor", "apparmor-utils", "gstreamer1.0-tools", "gstreamer1.0-alsa", "gstreamer1.0-plugins-base",
             "gstreamer1.0-plugins-good"]
@@ -129,8 +132,34 @@ def library_item(identifier: str) -> dict:
     return item
 
 
+def release_mount(mount: Path) -> bool:
+    """Unmount one of this application's own FUSE mounts; True once it is gone.
+
+    A process that still has files open (a Console shell, a firmware process that
+    outlived the service) makes a plain unmount fail as busy. The image is mounted
+    read-only, so a lazy unmount is safe: the path detaches now and the FUSE daemon
+    exits when the last of those processes lets go. A dead mount ("transport
+    endpoint is not connected") is cleared the same way.
+    """
+    for flags in ([], ["-z"]):
+        if not os.path.ismount(mount) and not stale_mount(mount):
+            return True
+        run(["fusermount3", "-u", *flags, mount], check=False)
+    return not os.path.ismount(mount) and not stale_mount(mount)
+
+
+def stale_mount(mount: Path) -> bool:
+    try:
+        os.stat(mount)
+    except OSError as error:
+        return error.errno == errno.ENOTCONN
+    return False
+
+
 def mounted_image(item: dict) -> Path:
     mount = DATA / "mounts" / safe_id(item["id"])
+    if stale_mount(mount):  # left behind by a squashfuse that died; mount the image again
+        release_mount(mount)
     mount.mkdir(parents=True, exist_ok=True)
     if not os.path.ismount(mount):
         if any(mount.iterdir()):
@@ -169,6 +198,10 @@ def status() -> dict:
     record["controls"] = load_json(DATA / "session/controls-feedback.json", {})
     record['replay'] = load_json(DATA / 'session/replay-status.json', {})
     record['vehicle_services'] = load_json(DATA / 'session/vehicle-services-feedback.json', {})
+    record['config_values'] = dict(load_json(DATA / 'session/config-values-feedback.json', {}),
+                                   conflicts=load_json(DATA / 'session/config-conflicts.json', []),
+                                   restarts=load_json(DATA / 'session/config-restarts.json', []),
+                                   car_config=load_json(DATA / 'session/car-config-learned.json', []))
     record['service_capabilities'] = CAPABILITIES
     try:
         with (DATA / 'session/center.log').open('rb') as source:
@@ -243,7 +276,8 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     config = {"firmware": str(root), "single_display": bool(profile.get("single_display")), "firmware_version": item["version"], "firmware_id": identifier, "map_id": map_id, "state": str(session), "profile": profile["id"],
               "browser": browser, "cluster": cluster, "maps": maps,
               "display": os.environ.get("DISPLAY", ":0"), "pulse": os.environ.get("PULSE_SERVER", ""),
-              "wsl": "microsoft" in platform.release().lower()}
+              "wsl": "microsoft" in platform.release().lower(),
+              "display_scale": display_scale.firmware_scale(bool(profile.get("single_display")))}
     atomic_json(session / "config.json", config)
     atomic_json(session / 'controls.json', Simulation().as_dict())
     camera = load_json(session / 'camera-source.json', {})
@@ -251,6 +285,9 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
         camera.update(autoplay=False, changed_at=time.time())
         atomic_json(session / 'camera-source.json', camera)
     atomic_json(session / 'controls-feedback.json', {})
+    atomic_json(session / 'config-values-feedback.json', {})
+    atomic_json(session / 'config-conflicts.json', [])
+    atomic_json(session / 'config-restarts.json', [])
     atomic_json(session / 'camera-consumer.json', {})
     atomic_json(session / 'camera-status.json', {'phase': 'starting'})
     atomic_json(session / "status.json", {"phase": "starting", "profile": profile["id"], "components": {}})
@@ -261,8 +298,8 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     return status()
 
 
-def session_config():
-    if systemctl('is-active', UNIT).returncode != 0:
+def session_config(require_active=True):
+    if require_active and systemctl('is-active', UNIT).returncode != 0:
         raise RuntimeError('Start a session before using its display tools.')
     return load_json(DATA / 'session/config.json', {})
 
@@ -313,6 +350,39 @@ def set_vehicle_services(payload):
     atomic_json(DATA / 'session/vehicle-services.json', result)
     publish_can_state(vehicle_services=result)
     return result
+
+
+MAX_CONFIG_VALUE = 65536  # some settings are base64 blobs of a few KB (GUI_homePlaceHistoryItem is 2.3 KB)
+
+
+def set_config_values(payload):
+    """Merge named DataValue overrides for the runtime to write to the displays.
+
+    One bad entry never fails the rest: the valid ones are stored and the names that were
+    not stored come back in `rejected`.
+    """
+    path = DATA / 'session/config-values.json'
+    values = load_json(path, {})
+    explicit_path = DATA / 'session/config-explicit.json'
+    explicit = set(load_json(explicit_path, []))
+    refused = config_csv.unsupported_car(payload.get('values', {}), load_json(DATA / 'session/config.json', {}).get('single_display'))
+    if refused:
+        raise ValueError(refused)
+    rejected = []
+    for name in payload.get('remove', []):
+        values.pop(str(name), None)
+        explicit.discard(str(name))
+    for name, value in payload.get('values', {}).items():
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,127}', str(name)) or config_csv.private(str(name)):
+            rejected.append(str(name)[:60])
+        elif isinstance(value, bool) or isinstance(value, (int, float)) or (isinstance(value, str) and len(value) <= MAX_CONFIG_VALUE):
+            values[name] = value
+            (explicit.add if name in payload.get('explicit', []) else explicit.discard)(name)
+        else:
+            rejected.append(name)
+    atomic_json(path, values)
+    atomic_json(explicit_path, sorted(explicit & values.keys()))
+    return {'count': len(values), 'rejected': rejected}
 
 
 def can_service_state() -> Path:
@@ -481,7 +551,10 @@ def focus_display(name):
 
 
 def restart():
-    config = session_config()
+    # A failed session is inactive but keeps its config, so Restart still works after a crash.
+    config = session_config(require_active=False)
+    if not config.get('firmware'):
+        raise RuntimeError('Start a session first.')
     identifier = config.get('firmware_id') or Path(config['firmware']).name
     map_id = config.get('map_id') or (Path(config['maps']).name if config.get('maps') else None)
     library_item(identifier)
@@ -497,9 +570,47 @@ def stop():
     atomic_json(DATA / "session/status.json", {"phase": "stopped", "components": {}})
     # Unmount only this application's own FUSE mounts, after its clients stop.
     for mount in (DATA / "mounts").glob("*"):
-        if os.path.ismount(mount):
-            run(["fusermount3", "-u", mount], check=False)
+        release_mount(mount)
     return status()
+
+
+def factory_reset():
+    """Drop every cached artefact so the next start behaves like a first import.
+
+    Removes the session state, the copied engine, FUSE mount points and the
+    library index. The user's firmware, map and QEMU guest files are untouched.
+    """
+    stop()  # also releases the image mounts, lazily when something still holds them
+    # Never delete through a mount: rmtree would walk into the firmware image.
+    held = [m.name for m in (DATA / "mounts").glob("*") if not release_mount(m)]
+    if held:
+        raise RuntimeError("The firmware image could not be unmounted (fusermount3 refused it), so nothing was deleted. "
+                           f"Run `fusermount3 -uz {DATA / 'mounts' / held[0]}` or restart WSL, then try Full reset again.")
+    for name in ("session", "engine", "mounts"):
+        target = DATA / name
+        if target.is_symlink():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+    (DATA / "library.json").unlink(missing_ok=True)
+    return {"reset": True, "status": status()}
+
+
+SECURITYFS = "securityfs /sys/kernel/security securityfs defaults 0 0\n"
+
+
+def keep_apparmor_loaded(systemd=Path("/run/systemd/system"), fstab=Path("/etc/fstab"), wsl=None):
+    """Have the AppArmor service reload the profiles after every reboot or `wsl --shutdown`.
+
+    WSL does not mount securityfs at boot, and apparmor.service refuses to start without it.
+    """
+    if wsl is None:
+        wsl = "microsoft" in platform.release().lower()
+    if wsl and not fstab.is_symlink() and "securityfs" not in (fstab.read_text() if fstab.exists() else ""):
+        with fstab.open("a") as file:
+            file.write(SECURITYFS)
+    if systemd.is_dir() and shutil.which("systemctl"):
+        run(["systemctl", "enable", "apparmor"], check=False)
 
 
 def setup(uid: int):
@@ -518,6 +629,7 @@ def setup(uid: int):
     policy_target.chmod(0o644)
     if Path("/sys/module/apparmor/parameters/enabled").read_text().strip().upper() == "Y":
         run(["apparmor_parser", "-r", policy_target])
+    keep_apparmor_loaded()
     for name in ("/run/chromium", "/run/chromium/policies", "/run/chromium/policies/chromium", "/run/chromium/policies/chromium-card", "/run/chromium/policies/chromium-fullscreen", "/opt/games/run", "/opt/games/run/chromium-cache-files", "/opt/games/run/i2v"):
         path = Path(name)
         if any(p.is_symlink() for p in (path, *path.parents)):
@@ -530,7 +642,7 @@ def setup(uid: int):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "browser", "steering", "can", "can-start", "can-status", "can-setup", "qemu-check", "qemu-start", "qemu-status", "qemu-stop"))
+    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "config-values", "browser", "steering", "can", "can-start", "can-status", "can-setup", "factory-reset", "qemu-check", "ssh-key", "qemu-start", "qemu-status", "qemu-stop"))
     parser.add_argument('--button')
     parser.add_argument('--can-backend', choices=('auto', 'socketcan', 'software'), default='auto')
     parser.add_argument('--bridge-port', type=int, default=20200)
@@ -552,7 +664,9 @@ def main():
     parser.add_argument("--internet", action="store_true")
     args = parser.parse_args()
     try:
-        if args.engine == 'qemu' and args.action not in ('import', 'qemu-check', 'qemu-start', 'qemu-status', 'qemu-stop'):
+        if args.action == 'ssh-key' and args.engine != 'qemu':
+            raise ValueError('The SSH console needs the virtual-hardware (QEMU) engine.')
+        if args.engine == 'qemu' and args.action not in ('import', 'factory-reset', 'qemu-check', 'qemu-start', 'qemu-status', 'qemu-stop'):
             sys.path.insert(0, str(PACKAGE.parent))
             from infotainment_lab.virtual_control import dispatch
             result = dispatch(args, sys.modules[__name__])
@@ -579,12 +693,14 @@ def main():
         elif args.action == "start": result = start(args.id or "", args.map_id, not args.no_browser, not args.no_cluster)
         elif args.action == "stop": result = stop()
         elif args.action == "status": result = status()
+        elif args.action == "factory-reset": result = factory_reset()
         elif args.action == "setup": result = setup(args.uid)
         elif args.action == 'restart': result = restart()
         elif args.action == 'camera': result = set_camera(args.source, args.path)
         elif args.action == 'camera-preview': result = camera_preview()
         elif args.action == 'replay': result = set_replay(json.loads(args.payload))
         elif args.action == 'vehicle-services': result = set_vehicle_services(json.loads(args.payload))
+        elif args.action == 'config-values': result = set_config_values(json.loads(args.payload))
         elif args.action == 'browser': result = open_browser(args.mode, args.url)
         elif args.action == 'steering': result = steering_button(args.button)
         elif args.action == 'can': result = can_call(json.loads(args.payload))

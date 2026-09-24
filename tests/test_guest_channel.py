@@ -52,7 +52,7 @@ def exchange(tmp_path, monkeypatch, payload, *, wrong_id=False):
 
 
 def test_buffered_guest_protocol_flushes_requests_and_preserves_large_output(tmp_path, monkeypatch):
-    expected = '仪表盘 / center\n' * 45000
+    expected = 'dashboard / center\n' * 45000
     payload = {'exited': True, 'exitcode': 0,
                'out-data': base64.b64encode(expected.encode()).decode()}
     output, requests = exchange(tmp_path, monkeypatch, payload)

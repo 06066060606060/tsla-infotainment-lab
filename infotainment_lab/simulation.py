@@ -15,12 +15,14 @@ class Simulation:
     brake_pct: float = 0
     steering_deg: float = 0
     indicator: str = "off"
+    car_off: bool = False
 
     @classmethod
     def parse(cls, value: dict) -> "Simulation":
         if not isinstance(value, dict) or set(value) - set(cls.__dataclass_fields__):
             raise ValueError("Unknown simulator field.")
         result = cls(**value)
+        result.car_off = bool(result.car_off)
         if result.gear not in ("P", "R", "N", "D"):
             raise ValueError("Gear must be P, R, N or D.")
         if result.indicator not in ("off", "left", "right", "hazard"):
@@ -31,6 +33,9 @@ class Simulation:
             if not math.isfinite(number) or not low <= number <= high:
                 raise ValueError(f"{key} must be between {low} and {high}.")
             setattr(result, key, number)
+        if result.car_off:
+            # A car that is off is parked: it cannot be in gear or moving.
+            result.gear = "P"
         if result.gear == "P":
             result.speed_kph = 0
             result.throttle_pct = 0
@@ -96,4 +101,14 @@ def display_values(sim: Simulation) -> dict[str, dict]:
                          'LOC_playbackYawRate': yaw_rate,
                          'LOC_playbackGPS_yawRate': yaw_rate},
         'indicator': indicator_values(sim.indicator),
+        # Park is not off. Only "Car off" drops the accessory rail, the driver, the
+        # accessory-plus state and the display keep-alive, so the firmware can sleep
+        # its screens; the drive rail is additionally live only out of Park.
+        'rails': {'VAPI_accRailOn': not sim.car_off,
+                  'VAPI_driveRailOn': not sim.car_off and sim.gear != 'P',
+                  'VAPI_driverPresent': not sim.car_off,
+                  'VAPI_vehicleInAccessoryPlus': not sim.car_off,
+                  'GUI_enableDisplayKeepAlive': not sim.car_off,
+                  'VAPI_icLCDOn': not sim.car_off,
+                  'VAPI_icBacklightOn': not sim.car_off},
     }

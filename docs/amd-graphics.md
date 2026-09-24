@@ -5,9 +5,6 @@ center display through `virgl (D3D12 (AMD Radeon(TM) Graphics))`. Its independen
 instrument window and vehicle visualization now share that GPU through VirtualGL. Host and guest renderer status are
 reported separately.
 
-替代内核模式已验证双屏 AMD VirGL 加速，仪表通过 VirtualGL 共用 GPU。构建与启动见
-[虚拟桌面说明](virtual-desktop.md)。以下保留原厂内核路线的排查结果。
-
 ## Original-kernel diagnostic findings
 
 | Layer | Verified on September 16, 2026 |
@@ -72,13 +69,7 @@ enables AMDGPU modules and enforced signatures. This is useful official source
 material, but it is not a verified compatible, trusted binary module for the
 current guest. That original-kernel audit did not replace its kernel. A separately authorized virtual-hardware VM now uses a Debian kernel.
 
-## 中文
-
-最新要求已允许更换内核；原厂内核诊断模式单独保留。主机端 AMD 驱动已经具备，问题在于默认 Mesa 环境使用 CPU 软件渲染；项目现已加入验证后保存 AMD 选择的流程，并通过真实 OpenGL 渲染验证。设置仅作用于本应用，后续启动生效。
-
-原厂内核诊断客体仍未获得 AMD 加速：该内核未启用 AMDGPU、强制验证模块签名，镜像中也没有匹配的 AMDGPU 内核模块；该模式的虚拟设备不提供可用的 Radeon GPU。工作目录中的 `libdrm_amdgpu.so` 是用户态库，不能替代内核模块。
-
-## Virtual-hardware kernel experiment / 虚拟硬件内核实验
+## Virtual-hardware kernel experiment
 
 The replacement-kernel QEMU
 VM boots Debian `7.1.8+deb13-amd64` with matching modules, VirtIO graphics,
@@ -101,6 +92,3 @@ instrument window now uses VirtualGL to share the accelerated center GPU. The
 actual firmware visualization log also reports the AMD-backed VirGL renderer;
 complete feature parity remains under validation.
 
-客体已验证 AMD 经 VirGL 提供 OpenGL 4.2 加速、HTTPS 联网及 HDA 设备枚举。
-原生 QEMU 双窗口已显示车机与浏览器卡片。双屏加速已验证；长时间流媒体播放和
-摄像头等完整功能等效仍需验证。

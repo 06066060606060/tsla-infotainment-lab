@@ -46,14 +46,14 @@ def test_windows_bridge_preserves_explicit_linux_camera_paths():
     assert len(converted) == 2
 
 
-def test_language_switch_preserves_controls_and_park_reconciles_sliders(monkeypatch):
+def test_rebuild_preserves_controls_and_park_reconciles_sliders(monkeypatch):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr(Bridge, 'call', lambda *a: True)
     window = MainWindow()
     window.set_gear('D')
     window.sliders['speed_kph'].setValue(42)
     window.indicator.setCurrentIndex(2)
-    window.change_language(1)
+    window.rebuild()
     assert window.sim.speed_kph == 42
     assert window.indicator.currentData() == 'right'
     window.set_gear('P')
@@ -67,7 +67,6 @@ def test_launch_is_gated_by_environment_and_has_an_actionable_reason(monkeypatch
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr(Bridge, 'call', lambda *a: True)
     window = MainWindow()
-    window.zh = False
     window.library = [device()]
     window.environment = ready_environment() | {'display_available': False}
     window.refresh_library()
@@ -91,7 +90,7 @@ def test_errors_survive_background_status_until_dismissed(monkeypatch):
     window.close()
 
 
-def test_launch_options_survive_language_change_and_reopen(monkeypatch):
+def test_launch_options_survive_rebuild_and_reopen(monkeypatch):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr(Bridge, 'call', lambda *a: True)
     window = MainWindow()
@@ -99,7 +98,7 @@ def test_launch_options_survive_language_change_and_reopen(monkeypatch):
     window.refresh_library()
     window.cluster_box.setChecked(False)
     window.browser_box.setChecked(False)
-    window.change_language(1)
+    window.rebuild()
     assert not window.cluster_box.isChecked() and not window.browser_box.isChecked()
     window.close()
     reopened = MainWindow()
@@ -125,7 +124,7 @@ def test_camera_routes_sources_to_worker_and_reports_actual_health(monkeypatch):
     window.session['camera'].update(firmware_receiving=True, fps=24)
     window.update_status()
     assert 'Firmware receiving' in window.camera_status.text()
-    window.change_language(1)
-    assert '固件正在接收' in window.camera_status.text()
+    window.rebuild()
+    assert 'Firmware receiving' in window.camera_status.text()
     assert window.camera_path.text() == '/tmp/tesla-sim/v4l2-back.rgb'
     window.close()

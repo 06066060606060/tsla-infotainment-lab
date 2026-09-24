@@ -44,7 +44,8 @@ def test_embedded_fields_preserve_recorded_metadata_and_six_controls():
     assert fields['autopilot_state'] == 2
     controls = replay.sample_controls(replay.Sample(0, fields))
     assert controls == {'gear': 'D', 'speed_kph': 36, 'throttle_pct': 17,
-                        'brake_pct': 100, 'steering_deg': -23.5, 'indicator': 'hazard'}
+                        'brake_pct': 100, 'steering_deg': -23.5, 'indicator': 'hazard',
+                        'car_off': False}
     assert 'autopilot_state' not in controls
 
 
@@ -100,7 +101,8 @@ def test_recorded_controls_obey_same_limits_as_manual_controls():
     sample = replay.Sample(0, {'gear_state': 0, 'vehicle_speed_mps': 100,
                                'accelerator_pedal_position': 110, 'steering_wheel_angle': -600})
     assert replay.sample_controls(sample) == {'gear': 'P', 'speed_kph': 0,
-        'throttle_pct': 0, 'brake_pct': 0, 'steering_deg': -540, 'indicator': 'off'}
+        'throttle_pct': 0, 'brake_pct': 0, 'steering_deg': -540, 'indicator': 'off',
+        'car_off': False}
 
 
 def test_reverse_negative_speed_is_not_discarded():

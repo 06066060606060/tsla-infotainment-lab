@@ -41,24 +41,30 @@ Linux documents `security=apparmor` for selecting it when it is not the default.
 This is a prerequisite experiment, not a demonstrated Spotify fix. See the
 [Linux AppArmor documentation](https://docs.kernel.org/admin-guide/LSM/apparmor.html).
 
+Runtime Setup loads the profiles only when AppArmor already reports `Y`. If
+AppArmor was enabled after Setup ran, `aa-exec` fails with `label not found`,
+the processes start unconfined, and the center logs
+`[PEERSEC] Incorrect security profile ... actual_profile=unconfined`. Run
+Runtime Setup again, or load the installed file directly:
+
+```bash
+grep -q securityfs /etc/fstab || echo 'securityfs /sys/kernel/security securityfs defaults 0 0' | sudo tee -a /etc/fstab
+sudo mount /sys/kernel/security 2>/dev/null
+sudo apparmor_parser -r /etc/apparmor.d/tsla-infotainment-lab-media
+sudo systemctl enable --now apparmor   # reload at every WSL start (needs systemd)
+```
+
+WSL does not mount securityfs at boot, and `apparmor.service` fails with
+`Assertion failed` without it, so the profiles disappear after `wsl --shutdown`.
+Runtime Setup adds the `fstab` line on WSL and enables the service. The session
+log names every process that starts without its profile. An unconfined
+`QtCarDvServer` or `QtCar` also keeps the Service Mode panel reloading: the page
+never learns that Service Mode is on.
+
+A successful start logs `Successful security profile match` for each service.
+
 WSL kernel arguments are global settings in the Windows user's `.wslconfig`.
 Changing them requires restarting WSL and affects every WSL 2 distribution.
 Keep the previous configuration for rollback and obtain a suitable interruption
 window before applying. See [Microsoft's WSL configuration documentation](https://learn.microsoft.com/en-us/windows/wsl/wsl-config).
 
-## 中文记录
-
-原生音乐卡片使用独立的 ChromiumApp、媒体网页、ChromiumAdapter 和 SpotifyServer。
-已根据旧项目研究，在当前 MCU2 固件中重新确认媒体来源的安全上下文声明和编译后的
-AppArmor 配置。普通浏览器能打开网页，不代表原生音乐链路已就绪。
-
-启动器已补上仅针对本机媒体来源的安全上下文声明，并加载原厂 ChromiumApp 策略。
-实际固件 Chromium 测试中，EME 接口从不可用变为可用；这还不能证明账户登录、CDM
-初始化或付费内容播放成功。
-
-之前从空的 sandbox.d 目录推断配置缺失不准确：真正的编译策略位于
-etc/apparmor.compiled。经用户确认重启后，当前 WSL 的 AppArmor 已启用。原厂策略用于
-确认固件要求的准确 peer 名称。“运行环境安装”会为只读用户挂载路径安装桌面兼容
-profile，启动器随后把 QtCar、QtCarCluster、SpotifyServer 和 ChromiumAdapter 附加到
-对应标签。实测重启后两个媒体服务均匹配成功，健康状态进入 `services-running`。
-修改 WSL 内核启动参数会影响所有 WSL 2 发行版，需要先安排重启时间。

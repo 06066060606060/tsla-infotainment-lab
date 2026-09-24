@@ -1,10 +1,10 @@
 # Infotainment Lab
 
-[简体中文](README.zh-CN.md) · [Download](https://github.com/derrickyau9/tsla-infotainment-lab/releases/latest) · [Changelog](CHANGELOG.md)
+[Download](https://github.com/derrickyau9/tsla-infotainment-lab/releases/latest) · [Changelog](CHANGELOG.md)
 
 Run infotainment software on your own computer, with the center display and instrument cluster in separate desktop windows. A native Qt app handles your firmware library, driving controls, browser windows, cameras, and recorded drives.
 
-Infotainment Lab runs on Linux and Windows with Debian WSL2. The Material 3 control panel supports native and QEMU desktop sessions. **0.5.1** fixes native startup and QEMU idle-display stalls.
+Infotainment Lab runs on Linux and Windows with Debian WSL2. The Material 3 control panel supports native and QEMU desktop sessions. The latest release, **0.5.1**, fixes native startup and QEMU idle-display stalls; the [changelog](CHANGELOG.md) lists what has landed since, including the Console, Vehicle config, Alerts, the Service Mode panel and firmware network isolation.
 
 ![Device manager with the light theme](docs/screenshots/material-devices-en.png)
 
@@ -12,7 +12,7 @@ Infotainment Lab runs on Linux and Windows with Debian WSL2. The Material 3 cont
 
 **You need your own compatible Firmware Dump.** Firmware and maps are not included in this repository or its downloads. Obtain a dump you have permission to use; this project does not provide extraction tools or export tutorials.
 
-The app reads fonts and vehicle assets from your selected image. Model S/X MCU2 images use a center display and instrument cluster; ICE images use a landscape center display. The built-in MCU2 profile is for **2026.26.6.1**. Other versions use the matching platform profile.
+The app reads fonts and vehicle assets from your selected image. Model S/X MCU2 images use a center display and instrument cluster; ICE images use a landscape center display. The built-in MCU2 profile is for **2026.26.6.1**. Other Model S/X MCU2 and ICE builds launch on an **experimental** generic profile for their platform, marked as such in Devices; they have no validation record (see [compatibility](docs/compatibility.md)).
 
 ## Get started
 
@@ -28,6 +28,8 @@ Run the app as your normal desktop user. Setup asks for administrator access whe
 
 Closing the control panel leaves the session running. **Stop** ends it; **Restart** starts again in Park. Device settings and your selected map package are remembered.
 
+**Full reset**, next to **QEMU boot check** on the Device page, stops the session and deletes the lab's cached session, engine copy, mount points, library index and saved device settings, as on a first import. Your firmware, map and QEMU guest files are never touched. Stop and Full reset unmount the image themselves, lazily if a Console shell or a leftover process still holds it, and a start after the mount helper died clears the dead mount and mounts the image again.
+
 ### From source
 
 Install Python 3.11+ and `python3-venv`, then:
@@ -42,6 +44,14 @@ The launcher creates a Python environment and installs Qt on first use. On Windo
 
 For a Start-menu shortcut, run `scripts/install-wsl-shortcut.ps1`. If the window does not open, launch from a terminal and check `~/.local/state/tsla-infotainment-lab/launcher.log`.
 
+#### Display scaling on Windows
+
+Under WSLg the lab reads your Windows display scale and draws everything at that size: the panel through Qt, and the center and instrument displays by starting the firmware at a larger window scale on a matching larger screen. Nothing is stretched, so text stays sharp and touches stay aligned. The displays shrink as needed to fit your desktop, in steps that keep whole pixels. A new scale applies from the next session start. Set `INFOTAINMENT_LAB_SCALE` (for example `1.25`, or `1` to turn scaling off) to choose another size. `python3 -m infotainment_lab.display_scale` prints the detected values.
+
+QEMU mode needs a guest image built with this version of `scripts/build-virtual-guest.py`; older images keep the default size.
+
+WSLg's own fractional scaling (`WESTON_RDP_FRACTIONAL_HI_DPI_SCALING` in `%USERPROFILE%\.wslgconfig`) stretches every window as a bitmap, which blurs text and enlarges the cursor. The lab takes it into account, but it isn't needed. If an earlier version added it, `python3 -m infotainment_lab.display_scale --disable-wslg-scaling` removes the line; then run `wsl --shutdown`.
+
 ### QEMU mode
 
 Choose **QEMU** in Devices to run the desktop inside a Debian guest. The panel manages startup, shutdown, dual-screen previews, browser cards, driving inputs, and camera replay. MCU2 uses VirGL for graphics, with VirtualGL sharing the GPU with the instrument window.
@@ -50,13 +60,15 @@ QEMU uses a replacement Linux kernel and your read-only firmware image. Prepare 
 
 ## Make it yours
 
-Choose System, Light, or Dark appearance and an Iris, Blue, or Leaf accent. Smaller windows switch to compact navigation. English and Simplified Chinese are available throughout the control panel.
-
-![Driving controls in the dark theme](docs/screenshots/material-controls-zh.png)
+Choose System, Light, or Dark appearance and an Iris, Blue, or Leaf accent. Smaller windows switch to compact navigation.
 
 ## Driving and instruments
 
-Select P, R, N, or D and adjust speed, accelerator, brake, steering, and turn signals in **Controls**. Both displays receive the same local inputs. Park resets speed and accelerator to zero.
+Select P, R, N, or D and adjust speed, accelerator, brake, steering, and turn signals in **Controls**. Both displays receive the same local inputs. Park resets speed and accelerator to zero. Drive, Wheel buttons and the vehicle-service groups share one tab bar.
+
+The Drive tab's power meter spans **-100 kW** (regen) to **+400 kW** (drive) in 1 kW steps and writes that value to `VAPI_powerLevel`. The kW unit is inferred from the firmware, not yet confirmed on a running display.
+
+**Car off** is separate from Park. It shifts to Park, zeroes speed and accelerator, and turns off the power values the firmware watches: the rails, driver present, accessory power and the display keep-alive and backlight. The firmware then sees an off car and can sleep its screens. Selecting a gear turns the car back on, and the Drive feedback line shows the firmware's answer as **Power**.
 
 The steering-wheel buttons control volume, mute, playback, and tracks. Hold Volume + or − for continuous adjustment. The right-hand buttons open instrument panels. Santa mode and supported display preferences carry across both screens, along with music titles and playback information.
 
@@ -65,6 +77,32 @@ The steering-wheel buttons control volume, mute, playback, and tracks. Hold Volu
 **Vehicle services** brings together climate, doors, lights, energy, and audio. Open a door, change the battery level, or switch the headlights; the panel shows the firmware's response. Changes made through the native climate and audio controls feed back into the panel. See the [vehicle services guide](docs/vehicle-services.md).
 
 These controls operate the local desktop session. They do not connect to a physical vehicle.
+
+## Service Mode
+
+Enter Service Mode on the center display with the normal access code (Controls → Software, hold MODEL), or use the Developer, Service and Factory switches on the **Modes** tab. The lab starts the firmware's own Service panel: its `service-ui` backend in a private network namespace and its `chromium-odin` window, with the firmware's data-value server supplying vehicle values. A stand-in for the diagnostic engine lists the image's own task catalogue (691 tasks on a 2026.8.3 MCU2 image).
+
+This is **experimental**. Tasks never run: each ends with an error saying no vehicle is attached. Gateway-config values are placeholders, VIN, odometer and firmware fields stay empty, the CAN Viewer stays locked, and Service Mode Plus is not available. No token, identity or access-code check is changed. See [Service Mode](docs/vehicle-services.md#service-mode).
+
+## Vehicle configuration
+
+**Vehicle config** imports a `Name,Value` CSV, such as a dump from your own car. Search it, show changed values only, edit or add keys, and **Apply** to write them to the running displays; each row shows the firmware's answer. **Defaults** returns to the lab's vehicle profile and **Export CSV** saves your edits.
+
+Imports keep personal data out: logins, passwords, PINs, keys, device and network identifiers, and locations are never imported, stored or written. Live readings such as display power are listed but never written. A Model 3 configuration is refused on an image that has only the Model S/X interface.
+
+Some car-config values make the firmware restart its UI. The lab handles that as a configuration restart, drops conflicting language settings after three restarts, and records each restart. See the [vehicle configuration guide](docs/vehicle-config.md).
+
+## Alerts
+
+Refused or unknown configuration keys and firmware restarts are listed under **Diagnostics › Alerts**, with a count on the Diagnostics sidebar entry, instead of popups. Each restart alert names the display and the values it restarted for.
+
+## Console
+
+**Console** opens a terminal inside the running CID's read-only firmware root, with Tab completion, history and Ctrl+C. The native engine enters it directly through a user namespace. The QEMU engine connects over SSH to `127.0.0.1:2222` with a key the lab creates and authorizes on first **Connect**, then enters the image the guest mounts at `/firmware`. Guest images built before the SSH server was added need a rebuild.
+
+## Firmware network isolation
+
+Firmware processes and browsers the lab starts cannot reach Tesla's servers. Names under `tesla.com`, `teslamotors.com`, `tesla.services` and `tesla.cn` do not resolve, and each process log records `netguard: blocked lookup of …`. The two local media names still map to loopback, and other traffic such as map tiles is unchanged. Connections to literal IP addresses are not intercepted.
 
 ## Browser workspace
 

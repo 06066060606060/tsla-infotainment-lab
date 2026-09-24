@@ -16,7 +16,7 @@ if not output.resolve().is_relative_to(root.resolve()) or not (root / 'build' / 
 subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--distpath', str(output),
                 '--workpath', str(root / 'build' / system), str(root / 'InfotainmentLab.spec')], cwd=root, check=True)
 bundle = output / 'InfotainmentLab'
-for name in ('README.md', 'README.zh-CN.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
+for name in ('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
              'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md'):
     shutil.copy2(root / name, bundle / name)
 shutil.copytree(root / 'docs', bundle / 'docs', dirs_exist_ok=True)
