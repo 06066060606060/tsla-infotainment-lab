@@ -275,7 +275,33 @@ def cleanup():
         stream.close()
 
 
+def prepare_firmware_mounts(config):
+    """WSL's desktop and systemd can have distinct mount namespaces.
+
+    Re-establish owned mounts from inside the service before using the image.
+    The service cgroup also owns these FUSE workers until the session stops.
+    Prepared QEMU guests already mount their disks in the guest's namespace.
+    """
+    if not config.get('managed_mounts'):
+        return
+    import backend
+    with backend.firmware_files.lock(backend.DATA):
+        item = backend.library_item(config['firmware_id'])
+        root = backend.mounted_image(item)
+        profile = backend.profile_for(item['version'], item['variant'])
+        if item['kind'] != 'firmware' or not profile:
+            raise ValueError('The selected firmware has no compatible launch profile.')
+        backend.verify_builds(root, profile)
+        config['firmware'] = str(backend.firmware_view(item, root))
+        if config.get('map_id'):
+            maps = backend.library_item(config['map_id'])
+            if maps['kind'] != 'map':
+                raise ValueError('Select a map image for the map slot.')
+            config['maps'] = str(backend.mounted_image(maps))
+
+
 def outer(config: dict, config_path: Path):
+    prepare_firmware_mounts(config)
     state = Path(config["state"])
     env = dict(os.environ, DISPLAY=config["display"])
     if config["pulse"]:

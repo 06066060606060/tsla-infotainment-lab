@@ -96,6 +96,12 @@ Some car-config values make the firmware restart its UI. The lab handles that as
 
 Refused or unknown configuration keys and firmware restarts are listed under **Diagnostics › Alerts**, with a count on the Diagnostics sidebar entry, instead of popups. Each restart alert names the display and the values it restarted for.
 
+## Firmware replacements and Debug
+
+**Diagnostics → Firmware replacements** lets you select an imported firmware, enter an existing file path inside its SquashFS and choose a local replacement. Stop that session before changing files; replacements apply at the next launch and persist per image. **Restore selected original** removes a replacement. The original SquashFS stays unchanged and the combined runtime mount remains read-only. Native mode needs `fuse-overlayfs` through **Prepare computer**; QEMU needs a rebuilt guest.
+
+**Debug**, below Diagnostics, displays current process logs and OS debug sources, with automatic refresh, source selection and a line filter. Native mode identifies the host kernel and session journal; QEMU shows guest serial output and available guest journals. See the [firmware replacements and Debug guide](docs/firmware-debug.md).
+
 ## Console
 
 **Console** opens a terminal inside the running CID's read-only firmware root, with Tab completion, history and Ctrl+C. The native engine enters it directly through a user namespace. The QEMU engine connects over SSH to `127.0.0.1:2222` with a key the lab creates and authorizes on first **Connect**, then enters the image the guest mounts at `/firmware`. Guest images built before the SSH server was added need a rebuild.

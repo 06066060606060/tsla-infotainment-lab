@@ -44,6 +44,12 @@ Diagnostics holds an Alerts card fed by configuration refusals and restarts. Lau
 Qt's user settings. Pages scroll when content exceeds the window. Errors remain
 visible independently of background polling.
 
+Diagnostics also manages explicit per-image file replacements. The Debug sidebar
+page takes bounded local log snapshots through `debug_logs.py` and polls only
+while visible. Native kernel sources are labelled as host logs; QEMU keeps serial
+output available while guest journals are unavailable. Raw output stays outside
+public diagnostic reports. See [firmware replacements and Debug](firmware-debug.md).
+
 `bridge.py` runs blocking backend commands in a Qt thread pool. Linux invokes
 `/usr/bin/python3`; the optional Windows panel invokes that same backend in WSL
 using argument arrays and path conversion. This keeps distribution packages
@@ -66,6 +72,11 @@ exports. It copies the original runtime sources into stable user storage before
 starting a service. The session therefore does not depend on the lifetime of a
 packaged GUI's extraction directory. A single owned service avoids competing
 instances on fixed firmware loopback endpoints.
+
+On WSL the desktop worker and the systemd user service can have separate mount
+namespaces. The native supervisor establishes the image and replacement mounts
+inside its service before using firmware files; seeing a mount in the desktop
+worker alone is insufficient. The service cgroup owns those FUSE workers.
 
 `supervisor.py` builds four source adapters, allocates available nested X11
 displays, starts a private D-Bus session and launches ordinary user processes
@@ -145,8 +156,11 @@ pressed pointer through motion and release, and handles wheel events and
 browser geometry. Its keyboard path registers a public Qt4 event-dispatcher
 filter for the touched browser and chains the previous filter for other events.
 `native-compositor.c` refreshes the named pixmap after window
-resize and supplies the compatibility rendering path. Firmware files are not
-modified.
+resize and supplies the compatibility rendering path. Imported image files are
+never rewritten. Explicit replacements in `replacements/<image-id>/` are exposed
+above the original SquashFS through a read-only `fuse-overlayfs` view. The native
+engine releases views before their backing mounts. Updated QEMU guests combine
+a private snapshot of replacement files with `/firmware-base` at `/firmware`.
 
 ## Shared vehicle state
 
@@ -227,6 +241,8 @@ Data lives under `$XDG_DATA_HOME/tsla-infotainment-lab`, normally
 | --- | --- |
 | `library.json` | Image references and checksums; imported images stay in place. |
 | `mounts/` | Read-only FUSE mounts keyed by image digest. |
+| `replacements/` | Private per-image copies of explicitly selected replacement files. |
+| `views/` | Read-only merged firmware mounts, released before the underlying image mounts. |
 | `engine/` | Stable copy of the repository's runtime sources. |
 | `session/` | Owned config, logs, generated adapters and browser/display profiles. |
 | `session/controls.json` | Current six driving inputs. |

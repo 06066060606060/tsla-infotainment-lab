@@ -55,6 +55,34 @@ def test_single_display_preflight_does_not_require_cluster(tmp_path):
         backend.verify_builds(tmp_path, profile)
 
 
+def test_supervisor_prepares_firmware_and_maps_in_its_own_mount_namespace(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    firmware = {'id': 'a' * 16, 'kind': 'firmware', 'version': '2026.26.6.5', 'variant': 'ice_mrb'}
+    maps = {'id': 'b' * 16, 'kind': 'map'}
+    monkeypatch.setattr(backend, 'library_item', lambda identifier: firmware if identifier == firmware['id'] else maps)
+    mounts = []
+    def mount(item):
+        mounts.append(item['id'])
+        return tmp_path / 'service-mounts' / item['id']
+    monkeypatch.setattr(backend, 'mounted_image', mount)
+    checked = []
+    monkeypatch.setattr(backend, 'verify_builds', lambda root, profile: checked.append(root))
+    monkeypatch.setattr(backend, 'firmware_view', lambda item, root: tmp_path / 'service-view')
+    config = {'managed_mounts': True, 'firmware_id': firmware['id'], 'map_id': maps['id'], 'firmware': '/invisible-desktop-mount'}
+    supervisor.prepare_firmware_mounts(config)
+    assert mounts == [firmware['id'], maps['id']]
+    assert checked == [tmp_path / 'service-mounts' / firmware['id']]
+    assert config['firmware'] == str(tmp_path / 'service-view')
+    assert config['maps'] == str(tmp_path / 'service-mounts' / maps['id'])
+
+
+def test_prepared_guest_does_not_remount_host_library(monkeypatch):
+    monkeypatch.setattr(backend, 'library_item', lambda _: pytest.fail('Guest must not open host library'))
+    config = {'firmware': '/firmware', 'display_backend': 'provided'}
+    supervisor.prepare_firmware_mounts(config)
+    assert config['firmware'] == '/firmware'
+
+
 def test_native_service_directory_is_private_and_rejects_symlinks(tmp_path):
     private = tmp_path / 'dvaccess'
     supervisor.prepare_service_sockets(private)

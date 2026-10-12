@@ -63,6 +63,9 @@ class VehicleServices:
     developer_mode: bool = False
     service_mode: bool = False
     factory_mode: bool = False
+    transport_mode: bool = False
+    showroom_mode: bool = False
+    
 
     @classmethod
     def parse(cls, value: dict) -> "VehicleServices":
@@ -158,6 +161,8 @@ FIELD_SPECS = {
     "developer_mode": _field("modes", "Developer mode", "bool"),
     "service_mode": _field("modes", "Service mode", "bool"),
     "factory_mode": _field("modes", "Factory mode", "bool"),
+    "transport_mode": _field("modes", "transport mode", "bool"),
+    "showroom_mode": _field("modes", "showroom mode", "bool"),
     **{f"tire_{wheel}_bar": _field("tires", f"{label} pressure (bar)", low=0, high=5)
        for wheel, label in (("fl", "Front left"), ("fr", "Front right"),
                             ("rl", "Rear left"), ("rr", "Rear right"))},
@@ -229,6 +234,8 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "developer_mode": {"GUI_developerMode": v.developer_mode},
         "service_mode": {"GUI_serviceMode": v.service_mode},
         "factory_mode": {"GUI_factoryMode": v.factory_mode},
+        "transport_mode": {"GUI_transportMode": v.transport_mode},
+        "showroom_mode": {"GUI_showroomMode": v.showroom_mode},
         **{name: {} for name in ("tire_fl_bar", "tire_fr_bar", "tire_rl_bar", "tire_rr_bar")},
     }
     # The charge screen keys off the gateway charge state and the port state as
@@ -263,7 +270,7 @@ REQUEST_FIELDS = {
     "alarm_armed": "GUI_alarmOnRequest",
     "power_level": "VAPI_powerLevel",
     "developer_mode": "GUI_developerMode", "service_mode": "GUI_serviceMode",
-    "factory_mode": "GUI_factoryMode",
+    "factory_mode": "GUI_factoryMode", "transport_mode": "GUI_transportMode", "showroom_mode": "GUI_showroomMode",
 }
 
 

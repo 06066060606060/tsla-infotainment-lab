@@ -22,7 +22,7 @@ PACKAGES = ('systemd-sysv systemd-resolved dracut udev dbus dbus-x11 xserver-xor
             'gcc libc6-dev binutils libx11-dev xserver-xephyr xdotool libnss3 libgbm1 libatk-bridge2.0-0t64 '
             'libxkbcommon-x11-0 libxcb-cursor0 ffmpeg apparmor apparmor-utils '
             'gstreamer1.0-tools gstreamer1.0-alsa gstreamer1.0-plugins-base gstreamer1.0-plugins-good '
-            'squashfs-tools squashfuse fuse3 libxtst6 libxv1 libglu1-mesa').split()
+            'squashfs-tools squashfuse fuse3 fuse-overlayfs libxtst6 libxv1 libglu1-mesa').split()
 
 VGL_VERSION = '3.1.5'
 VGL_SHA256 = 'df3f7788ce41b182a47c0d298e5cd6d2d63579522cb41825970b7726e825485e'
@@ -108,6 +108,7 @@ done
 if [ -f /sys/firmware/qemu_fw_cfg/by_name/opt/tsla-lab/config/raw ]; then
  install -m 0600 -o lab -g lab /sys/firmware/qemu_fw_cfg/by_name/opt/tsla-lab/config/raw /run/user/1000/lab-launch.json
 fi
+python3 /opt/infotainment-lab/guest_firmware.py
 if [ -b /dev/disk/by-id/virtio-lab-maps ]; then
  mkdir -p /maps
  mountpoint -q /maps || mount -t squashfs -o ro /dev/disk/by-id/virtio-lab-maps /maps
@@ -169,7 +170,7 @@ def finish_image(directory, owner):
     run('chroot', root, 'groupadd', '--system', 'dvaccess')
     run('chroot', root, 'groupadd', '--system', 'dvshm')
     run('chroot', root, 'useradd', '-m', '-u', '1000', '-s', '/bin/bash',
-        '-G', 'audio,video,render,input,dvaccess,dvshm', 'lab')
+        '-G', 'audio,video,render,input,dvaccess,dvshm,adm,systemd-journal', 'lab')
     write('etc/ssh/sshd_config.d/10-lab.conf', 'PasswordAuthentication no\nPermitRootLogin no\n')
     shutil.copytree(REPO / 'infotainment_lab', root / 'opt/infotainment-lab',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.so'))
@@ -180,7 +181,8 @@ def finish_image(directory, owner):
           'default-sample-rate = 48000\nalternate-sample-rate = 48000\n'
           'default-fragments = 4\ndefault-fragment-size-msec = 20\n')
     write('etc/hosts', '127.0.0.1 localhost\n127.0.1.1 infotainment-vm\n')
-    write('etc/fstab', '/dev/vda / ext4 defaults 0 1\n/dev/vdb /firmware squashfs ro 0 0\n')
+    write('etc/fstab', '/dev/vda / ext4 defaults 0 1\n/dev/vdb /firmware-base squashfs ro 0 0\n')
+    (root / 'firmware-base').mkdir()
     (root / 'firmware').mkdir()
     write('etc/systemd/network/20-wired.network', '[Match]\nName=en* eth*\n[Network]\nDHCP=yes\n')
     (root / 'etc/resolv.conf').unlink(missing_ok=True)
@@ -194,7 +196,7 @@ def finish_image(directory, owner):
 Description=Infotainment Lab virtual-hardware session
 After=systemd-user-sessions.service apparmor.service network-online.target
 Wants=network-online.target
-RequiresMountsFor=/firmware
+RequiresMountsFor=/firmware-base
 Conflicts=getty@tty1.service
 [Service]
 ExecStart=/usr/local/bin/lab-xorg
@@ -215,7 +217,7 @@ WantedBy=multi-user.target
         os.chown(directory / name, owner.pw_uid, owner.pw_gid)
     (directory / 'build.json').write_text(json.dumps({'kernel': version, 'mode': 'virtual-hardware',
         'firmware_included': False, 'packages': PACKAGES, 'virtualgl': VGL_VERSION,
-        'full_firmware_verified': False, 'display_scale': True}, indent=2))
+        'full_firmware_verified': False, 'display_scale': True, 'firmware_replacements': True}, indent=2))
     for p in (directory, disk, directory / 'build.json'):
         os.chown(p, owner.pw_uid, owner.pw_gid)
     print('Guest files prepared in', directory)
