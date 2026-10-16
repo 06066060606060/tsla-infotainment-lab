@@ -16,10 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from simulation import Simulation, display_values as driving_values, indicator_values
 from vehicle_services import (VehicleServices, REQUEST_FIELDS, CAPABILITIES, DisplayWriter,
                               display_values, equivalent, speed_display_values, replay_location,
-                              MEDIA_NETWORK_SERVICES, media_network_values)
+                              MEDIA_NETWORK_SERVICES, media_network_values, navigation_fix)
 from vehicle_services import BodyRequestRouter, BODY_REQUESTS, decode_service_request
 from display_bus import connect, call_many
-from config_csv import CAR_CONFIG_EXTRA
+from config_csv import CAR_CONFIG_EXTRA, pending_overrides
 
 bus = connect(os.environ['DBUS_SESSION_BUS_ADDRESS'])
 state = Path(os.environ['TESLA_NATIVE_STATE'])
@@ -86,6 +86,8 @@ def monitor():
 
 
 def typed(value):
+    if isinstance(value, list):
+        return dbus.Array([typed(item) for item in value], signature='v', variant_level=1)
     if isinstance(value, bool):
         return dbus.Boolean(value, variant_level=1)
     if isinstance(value, int):
@@ -110,22 +112,22 @@ def app_owned():
     names |= set(speed_display_values(0, 'Miles'))
     for groups in (display_values(model), driving_values(controls)):
         for group in groups.values(): names |= set(group)
+    names |= set(navigation_fix(model, 0))
+    names |= {'LOC_estimatedLat', 'LOC_estimatedLon', 'LOC_estimatedHdg',
+              'LOC_geoAccuracy', 'LOC_estimatedGeoTimestamp'}
     return names
 
 
 def apply_vehicle_profile(interface):
     """Write the named MCU2 values once whenever a display service starts."""
-    result = {}
     # A user override of a profile-owned name replaces the profile value, so the
     # two writers agree. Otherwise each display start would flip the value back
     # and the firmware would restart its UI until the supervisor gives up.
     car = car_config()
-    for name, value in {**vehicle_profile, **{n: v for n, v in config_values.items() if n in car}}.items():
-        try:
-            result[name] = 'accepted' if interface.DataSetValueRequest(name, typed(value), timeout=1) else 'unsupported'
-        except dbus.DBusException as exc:
-            result[name] = exc.get_dbus_name()
-    return result
+    values = {**vehicle_profile, **{n: v for n, v in config_values.items() if n in car}}
+    writer = DisplayWriter(interface, typed, batch=call_many)
+    _, details = writer.apply({'profile': values})
+    return details['profile']
 
 
 def network_values(current):
@@ -328,7 +330,9 @@ while True:
                 if (current_gps != last_gps or tick >= next_slow) and gps:
                     gps_signals = {k: v for k, v in display_values(gps).items()
                                    if k in ('latitude_deg', 'longitude_deg', 'heading_deg')}
-                    gps_report, gps_details = writer.apply(gps_signals)
+                    # Native navigation reconnects can clear a fix without changing
+                    # the desktop request. Confirm cached GPS values periodically.
+                    gps_report, gps_details = writer.apply(gps_signals, verify_cached=tick >= next_slow)
                     service_report.setdefault(service, {}).update(gps_report)
                     service_details.setdefault(service, {}).update(gps_details)
                 if service_dirty or tick >= next_services:
@@ -342,23 +346,30 @@ while True:
                     # for a user request in the next 250ms native-input poll.
                     request_baseline[service] = {name: result[1] for name, result in
                                                  writer.read_many(REQUEST_FIELDS.values()).items()}
+                if tick >= next_slow or current_gps != last_gps or service_dirty:
+                    fix_report, fix_details = writer.apply(
+                        {'gps_fix': navigation_fix(gps or model, time.time())}, verify_cached=True)
+                    service_report.setdefault(service, {}).update(fix_report)
+                    service_details.setdefault(service, {}).update(fix_details)
                 if tick >= next_slow:
                     writer.apply({'awake': awake}, verify_cached=True)
                 if tick >= next_network:
                     writer.apply({'network': network_values(snapshot)}, verify_cached=True)
-                # Write each override once per service. Car-config names (the vehicle
+                # Recheck explicit local FSD UI inputs that firmware service defaults
+                # can replace after startup. Other overrides are sent once.
+                # Car-config names (the vehicle
                 # profile's keys) are never written live: the firmware restarts its UI
                 # for each changed one. They reach the displays through the persisted
                 # store and the profile write at the next start.
                 sent, car = config_sent.setdefault(service, {}), car_config()
-                todo = {name: value for name, value in config_values.items()
-                        if name not in car and (name not in sent or sent[name] != value)}
+                explicit = set(read_json('config-explicit.json', []))
+                todo = pending_overrides(config_values, sent, car, explicit, refresh=tick >= next_slow)
                 if todo:
-                    owned = app_owned() - set(read_json('config-explicit.json', []))  # a value the user set wins over the app's model
+                    owned = app_owned() - explicit  # a value the user set wins over the app's model
                     sent.update(todo)  # also the ones left to the app, so this is not recomputed every tick
                     todo = {name: value for name, value in todo.items() if name not in owned}
                 if todo:
-                    _, detail = writer.apply({'config': todo})
+                    _, detail = writer.apply({'config': todo}, verify_cached=True)
                     config_report.setdefault(service, {}).update(detail['config'])
                 errors.pop(service, None)
             except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
