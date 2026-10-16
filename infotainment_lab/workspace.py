@@ -121,7 +121,8 @@ def build_workspace(window, label, card, DropArea):
     more.setContentsMargins(0, 0, 0, 0)
     window.maps_box = QComboBox()
     more.addWidget(window.maps_box)
-    more.addWidget(label('Maps: mount only; navigation is not connected yet.', 'muted', True))
+    window.maps_hint = label('Select a TeslaMaps image for offline routing. Street map imagery uses the network provider.', 'muted', True)
+    more.addWidget(window.maps_hint)
     window.distro_box = QComboBox()
     window.distro_box.setEditable(True)
     window.distro_box.addItems(['Debian', 'Ubuntu'])
@@ -152,8 +153,8 @@ def build_workspace(window, label, card, DropArea):
     right.addLayout(tools)
     columns.addWidget(device, 1)
     layout.addLayout(columns, 1)
-    drop = DropArea('Drop firmware to add a device',
-                    'Or click to choose a local .mcu2, .ice or SquashFS file.')
+    drop = DropArea('Drop firmware or maps to import',
+                    'Or click to choose a local .mcu2, .ice, .map, .ssq or SquashFS file.')
     drop.files.connect(window.queue_imports)
     drop.clicked.connect(window.choose_files)
     layout.addWidget(drop)

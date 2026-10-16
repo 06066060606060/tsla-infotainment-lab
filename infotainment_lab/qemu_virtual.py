@@ -259,14 +259,14 @@ def status(directory):
                 'full_firmware_verified': False}
 
 
-def guest_action(directory, action, payload=None):
+def guest_action(directory, action, payload=None, *, timeout=15):
     allowed = {'status', 'controls', 'preview', 'capture', 'camera-preview', 'camera',
-               'replay', 'vehicle-services', 'browser', 'steering', 'logs', 'focus'}
+               'replay', 'vehicle-services', 'browser', 'steering', 'logs', 'debug', 'focus'}
     if action not in allowed:
         raise ValueError('Unknown guest desktop operation.')
     result = json.loads(guest_execute(directory, ['/usr/sbin/runuser', '-u', 'lab', '--',
                         '/usr/bin/python3', '/opt/infotainment-lab/guest_bridge.py',
-                        action, json.dumps(payload or {})]))
+                        action, json.dumps(payload or {})], timeout=timeout))
     if not result.get('ok'):
         raise RuntimeError(result.get('error', 'Guest operation failed.'))
     return result['data']

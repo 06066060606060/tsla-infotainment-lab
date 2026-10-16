@@ -11,7 +11,23 @@ INVALID = '@invalid'
 # battery, radio…); writing it makes the simulated hardware misbehave, so it is listed but not sent.
 SETTING_PREFIXES = ('FEATURE', 'GUI', 'VAPI', 'APP', 'APTRIAL', 'GTW', 'OPTION', 'AUTONAVDEBUG')
 # Watched by the firmware but not in the vehicle profile: seen restarting it (the supervisor learns more).
-CAR_CONFIG_EXTRA = frozenset({'VAPI_packConfig', 'VAPI_tpmsType', 'VAPI_restraintControlsType', 'GUI_navigationEngine'})
+CAR_CONFIG_EXTRA = frozenset({'VAPI_packConfig', 'VAPI_tpmsType', 'VAPI_restraintControlsType', 'GUI_navigationEngine', 'VAPI_carVersionString'})
+
+# These opt-in display simulation inputs can be replaced by firmware service
+# defaults after startup. Recheck explicit overrides without replaying commands
+# or vehicle configuration changes that restart the native UI.
+LOCAL_FSD_UI_SETTINGS = frozenset({
+    'FEATURE_fullSelfDriving', 'FEATURE_hasFullSelfDrivingNavMaps',
+    'GUI_enableFSDFunctions', 'GUI_fsdControlEnabled',
+    'GUI_enableStartFsdFromPark', 'GUI_isOnNavigationMap',
+})
+
+
+def pending_overrides(values, sent, car_config, explicit=(), refresh=False):
+    """Select changed overrides plus periodic, explicitly opted-in UI inputs."""
+    held = LOCAL_FSD_UI_SETTINGS.intersection(explicit) if refresh else set()
+    return {name: value for name, value in values.items()
+            if name not in car_config and (name not in sent or sent[name] != value or name in held)}
 
 
 # Personal data a vehicle dump can carry: account logins, PINs, keys, device and network
@@ -38,17 +54,24 @@ def unsupported_car(values, single_display):
     """Why these values cannot be used on this layout, or ''. The S/X layout has no Model 3 interface."""
     if str(values.get('VAPI_carType')) == 'Model3' and not single_display:
         return 'This is a Model 3 configuration. This firmware image has only the Model S/X interface, so it cannot be imported.'
+    if single_display and str(values.get('VAPI_carType')) in ('ModelS', 'ModelS2', 'ModelX'):
+        return 'This is a Model S/X configuration. This firmware image uses the Model 3 interface, so it cannot be imported.'
     return ''
 
 
 PROFILE = Path(__file__).parent / 'runtime' / 'vehicle-profile-model-x-mcu2.json'
+MODEL3_PROFILE = PROFILE.with_name('vehicle-profile-model-3-mcu2.json')
 
 
-@lru_cache(maxsize=1)
-def profile_defaults():
+def profile_path(single_display=False):
+    return MODEL3_PROFILE if single_display else PROFILE
+
+
+@lru_cache(maxsize=2)
+def profile_defaults(single_display=False):
     """The app's own defaults: the values the vehicle profile writes on every display start."""
     try:
-        signals = json.loads(PROFILE.read_text()).get('signals', {})
+        signals = json.loads(profile_path(single_display).read_text()).get('signals', {})
     except (OSError, ValueError, AttributeError):
         return {}
     return {name: str(value).lower() if isinstance(value, bool) else str(value) for name, value in signals.items()}
@@ -97,14 +120,19 @@ def parse(text, defaults=None, withheld=None):
     return rows, skipped, duplicates
 
 
-def car_config(learned=()):
+def car_config(learned=(), single_display=False):
     """Names the firmware restarts its UI for, so they are applied at start rather than live."""
-    return set(profile_defaults()) | CAR_CONFIG_EXTRA | set(learned)
+    return set(profile_defaults(single_display)) | CAR_CONFIG_EXTRA | set(learned)
 
 
-def coerce(value):
+def coerce(value, name='', single_display=False):
     """Type a CSV string for the display bus: bool, int, float or str."""
     text = value.strip()
+    # ICE/MRB enum labels can themselves be numbers: chassis '3' is ordinal 2,
+    # while ordinal 3 is Model Y. Battery trim '74' is also a label, not ordinal 74.
+    if single_display and ((name == 'VAPI_chassisType' and text == '3') or
+                           (name == 'VAPI_trim' and text in ('50', '62', '74'))):
+        return text
     if text.lower() in ('true', 'false'):
         return text.lower() == 'true'
     for cast in (int, float):

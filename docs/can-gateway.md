@@ -1,4 +1,93 @@
-# CAN channels and the emulated vehicle gateway
+# OS gateway observation and frame injection
+
+## Observe the running OS
+
+The panel opens on **OS traffic observation**. This view does not start the
+emulated gateway or its periodic LAB transmitter. Select **Network sends** to
+see successful firmware UDP sends to the session gateway on loopback, or
+**Gateway API requests** to inspect requests before transport delivery is known.
+These observation points can describe the same message; select **Both** only
+when comparing them. Timestamps are milliseconds since observer startup.
+
+Vehicle bus filters are **Party**, **Chassis** and **Body / VH**. The current
+Model 3 firmware's exported catalogue describes an **ETH** channel. Its message
+number does not establish the physical bus the vehicle gateway would forward
+onto. Those records therefore appear under **Gateway / Ethernet**; empty CAN
+bus filters remain empty. CAN extended/RTR flags are left unknown for Ethernet
+records, rather than invented. A successful UDP send does not prove CAN delivery.
+
+For single-display native sessions, `native_vehicle.py` starts the firmware's
+`QtCarVehicle`, which assembles the gateway messages. It reads the display's
+real published requests while keeping its own output publishers in a private
+mount namespace and its shared memory in a private IPC namespace. User namespaces
+and `mount` must be available. Its default vehicle data does not replace the
+lab display model. The supervisor owns and stops the process tree.
+
+`native-traffic.c` copies gateway API calls and successful `send`/`sendto` calls
+to a private nonblocking Unix datagram collector. It preserves the original
+calls, results and errno. `native_traffic.py` keeps a bounded 256-record memory
+window; the panel displays up to 128 matching records. This is a best-effort
+live view, not a lossless recorder. Slow viewers do not block the OS. Detailed
+snapshots and signal decoding are published while a viewer is polling; the
+closed panel retains only small status snapshots on disk.
+
+**Choose DBC** selects a local definition file without changing it. The source
+and selected path stay outside the repository. `native_catalog.py` reads the
+selected firmware's exported message/signal tables without executing the ELF;
+the recognized x86-64 layout is checked through symbol sizes and back pointers.
+It supplies names, units and enumerations, but these tables do not contain the
+bit positions needed for decoding. `native_dbc.py` applies the selected bit
+layouts, signedness, scaling and supported multiplex conditions. It refuses
+length mismatches and omits overlapping fields lacking multiplex definitions.
+An older DBC is not automatically merged with current definitions.
+
+Select a raw record to see **Signal / Value / Unit**. **Copy raw CSV** and
+**Copy decoded CSV** retain the supplied log formats' leading columns, with
+bus/direction/transport information appended so that the source stays visible.
+No recorded CSV is imported or replayed by this view. Captures, derived metadata
+and selected DBC paths remain local and outside public diagnostic exports.
+
+## FRAME INJECTION
+
+The desktop's former Lab gateway tools section is replaced by **FRAME INJECTION**.
+Select a decoded record under **Network sends**, choose **Use selected frame**,
+name the rule and check the signals to override. Editing a value checks its
+Override box. Values accept physical DBC units or exact enumeration labels.
+**Save rule (disabled)** stores the draft; **Enable selected rule** starts it.
+**Edit selected rule** loads an existing rule; saving edits disables it again.
+
+Each newly observed, successful OS UDP send for the selected message triggers
+one selective echo to **127.0.0.102:4321**. The echo contains the original
+message number and payload length. Its payload starts from that new frame,
+with only the selected signal bits replaced. The worker does not replay the
+sample used to create a rule or send periodically when no new frame arrives.
+Gateway API copies do not trigger a second echo. The worker is not preloaded
+with the capture adapter, so its own sends do not feed the observer again.
+The original OS send is preserved; this is an additional datagram.
+
+The local gateway endpoint is the only destination. No physical CAN interface,
+bus assignment, gateway receive service or OS input mapping is added by these
+rules. A successful UDP write is counted as an echo, not proof of receipt by
+another process, an OS state change or physical CAN delivery.
+
+The editor freezes its draft while observations keep updating. Inactive mux
+signals, ambiguous layouts, length/name mismatches, unknown labels and values
+outside raw range/resolution are refused. An inactive mux page on a later
+source frame is skipped and counted. Unselected counters and checksums follow
+the original frame; checksums are **not** automatically recalculated. The rule
+list shows errors, echo/skip counts and the last output; hover for source/output
+bytes. Up to 16 rules can be stored. **Disable selected rule**, **Delete selected
+rule** and **Stop all echoes** operate independently of the display pause.
+
+`native_injection.py` runs inside the observer. Configuration updates are
+serialized and acknowledged through its applied status, rather than reporting
+queue acceptance as success. Rules live in the private session directory,
+remain outside public diagnostic exports, and are disabled on every worker or
+device restart. Changing or losing the selected DBC stops active rules;
+explicit activation is required to resume. Closing the control panel keeps
+explicitly enabled rules running with the OS session.
+
+## Emulated lab gateway (CLI)
 
 This subsystem adds two things to the lab: a local CAN transport with several
 named channels, and an emulated gateway that decides what may cross between
@@ -11,8 +100,8 @@ those channels and the infotainment (Ethernet) side.
   session: separate channels, an identifier allowlist per direction, writes
   refused by default, a rate limit, and diagnostic traffic kept on its own
   channel.
-- There is **no vendor protocol, key, certificate or authentication scheme** in
-  this repository. The unlock step is a local HMAC handshake over a secret the
+- The emulated gateway contains **no vendor protocol, key, certificate or authentication scheme**.
+  Its unlock step is a local HMAC handshake over a secret the
   operator chooses (`LAB_GATEWAY_SECRET`, default `infotainment-lab`), so the
   "locked by default" path can be exercised end to end.
 - The frame definitions in `can_database.py` are **lab definitions**, authored
@@ -34,8 +123,9 @@ those channels and the infotainment (Ethernet) side.
 | `vehicle_can.py` | Projects `Simulation` and `VehicleServices` onto periodic frames |
 | `can_service.py` | The loop: transport, gateway, periodic transmitter, control socket |
 
-Channels: `veh` (VEH, body and drive state), `ch` (CHASSIS, charging and
-energy), `party` (PARTY, the isolated diagnostic pair). With SocketCAN they map
+Lab channel keys remain `veh` (displayed as BODY / VH), `ch` (CHASSIS),
+and `party` (PARTY). Their LAB frame roles are an emulation convention, not a
+description of those physical vehicle buses. With SocketCAN they map
 to `vcan0`, `vcan1` and `vcan2`.
 
 ## Routing
@@ -119,7 +209,7 @@ Read frames, with signals decoded where a definition matches:
 
 ```bash
 python3 infotainment_lab/backend.py can \
-  --payload '{"action": "trace", "channel": "pt", "limit": 20}'
+  --payload '{"action": "trace", "channel": "veh", "limit": 20}'
 ```
 
 Send a frame. `origin: ethernet` goes through the gateway and is subject to the
@@ -159,19 +249,12 @@ candump vcan0 vcan1 vcan2 vcan3
 cansend vcan0 3F5#0100
 ```
 
-## Desktop panel
-
-**CAN & gateway** in the sidebar starts the service, shows the transport,
-lock state and per-channel counters, performs the unlock handshake, sends a
-frame either through the gateway or straight onto a channel, and lists recent
-frames with decoded signals.
-
 ## Ethernet bridge
 
 UDP on `127.0.0.1:20200`. Binary messages carry one frame:
 
 ```
-byte 0    channel index (veh, pt, ch, party)
+byte 0    channel index (veh, ch, party)
 byte 1    flags (bit 0: extended identifier)
 bytes 2-5 identifier, big endian
 byte 6    payload length (0-8)

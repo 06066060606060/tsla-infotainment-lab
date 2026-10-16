@@ -37,12 +37,34 @@ flowchart LR
 
 ## Native desktop and backend
 
+CAN & gateway separates passive OS observation from the emulated LAB gateway.
+`native_vehicle.py` runs the Model 3 firmware's vehicle emitter with private
+output socket mounts and IPC, reading real center-display requests through
+read-only input socket links. `native-traffic.c` copies successful gateway UDP
+sends and API requests into `native_traffic.py` through nonblocking Unix
+datagrams. `native_catalog.py` extracts checked ELF metadata; `native_dbc.py`
+decodes supported layouts from the selected local DBC. `native_injection.py`
+selectively patches each new observed network send for explicitly enabled echo
+rules. Its own nonblocking UDP socket sends only to the original local gateway;
+it has no capture preload and cannot observe its own writes. Rule operations
+are acknowledged through applied observer status, and restart disables them.
+`frame_injection_panel.py` replaces the desktop's LAB tools; the emulation CLI
+remains separate. Ethernet messages are
+not assigned to physical CAN buses from their identifiers. See
+[CAN and gateway](can-gateway.md) for the observation and emulation boundaries.
+
 `application.py`, `workspace.py`, `presentation.py`, `lab_panels.py` and
 `config_panel.py` own the native widgets, device manager and the Camera & replay,
 Browsers, Vehicle services, CAN & gateway, Console and Vehicle config panels.
 Diagnostics holds an Alerts card fed by configuration refusals and restarts. Launch choices are stored per image in
 Qt's user settings. Pages scroll when content exceeds the window. Errors remain
 visible independently of background polling.
+
+Diagnostics also manages explicit per-image file replacements. The Debug sidebar
+page takes bounded local log snapshots through `debug_logs.py` and polls only
+while visible. Native kernel sources are labelled as host logs; QEMU keeps serial
+output available while guest journals are unavailable. Raw output stays outside
+public diagnostic reports. See [firmware replacements and Debug](firmware-debug.md).
 
 `bridge.py` runs blocking backend commands in a Qt thread pool. Linux invokes
 `/usr/bin/python3`; the optional Windows panel invokes that same backend in WSL
@@ -66,6 +88,11 @@ exports. It copies the original runtime sources into stable user storage before
 starting a service. The session therefore does not depend on the lifetime of a
 packaged GUI's extraction directory. A single owned service avoids competing
 instances on fixed firmware loopback endpoints.
+
+On WSL the desktop worker and the systemd user service can have separate mount
+namespaces. The native supervisor establishes the image and replacement mounts
+inside its service before using firmware files; seeing a mount in the desktop
+worker alone is insufficient. The service cgroup owns those FUSE workers.
 
 `supervisor.py` builds four source adapters, allocates available nested X11
 displays, starts a private D-Bus session and launches ordinary user processes
@@ -140,13 +167,34 @@ directory listing, and stops with the device. This supplies a normal browser
 origin for text/drag/audio/WebGL checks without hosting the native GUI.
 
 The adapters in `runtime/` bridge exported Qt/X11 operations and host graphics.
+`native-input.c` also adapts the single-display layout capability and the
+decorative tire-card asset through exported firmware functions. The supervisor
+opts in only for Model 3 sessions. The tire adapter changes the asset constructor's
+spinner argument only while constructing a TPMS card; it does not change pressure
+data or other loading indicators. Media Chromium uses the firmware's toolbar
+switches, preserving its native window title and D-Bus service registration.
+
+For single-display sessions, `asset_generation.py` watches the native generated
+asset identifier and runs the firmware's finite `godot --apviz-assetgen` renderer
+when its completed cache is missing. `native-assetgen.c` redirects the exported
+`StorageUtils::godotDataFolder()` path for the UI and renderer to the shared
+`session/assetgen-home/.Tesla/data` directory; Qt constructs the returned string
+without exposing its object layout. The renderer keeps the current vehicle
+configuration and produces day/night images, including the tire-card image.
+The worker reuses a completed cache, limits attempts and rendering time, and
+terminates its child when the owned session stops. Render output and worker
+status are available in Debug logs and `assetgen-status.json`.
+
 `native-browser-input.c` translates embedded-view coordinates, maintains the
 pressed pointer through motion and release, and handles wheel events and
 browser geometry. Its keyboard path registers a public Qt4 event-dispatcher
 filter for the touched browser and chains the previous filter for other events.
 `native-compositor.c` refreshes the named pixmap after window
-resize and supplies the compatibility rendering path. Firmware files are not
-modified.
+resize and supplies the compatibility rendering path. Imported image files are
+never rewritten. Explicit replacements in `replacements/<image-id>/` are exposed
+above the original SquashFS through a read-only `fuse-overlayfs` view. The native
+engine releases views before their backing mounts. Updated QEMU guests combine
+a private snapshot of replacement files with `/firmware-base` at `/firmware`.
 
 ## Shared vehicle state
 
@@ -171,8 +219,11 @@ alone is never treated as evidence that a value was applied.
 
 Native climate and audio request changes feed back into the same model and are
 sent to both displays. Service feedback retains individual accepted, partial,
-unsupported, rejected, mismatch and local-model states. Unverified tire units
-remain in the local model; no guessed TPMS conversion is injected.
+unsupported, rejected, mismatch and local-model states. The four simulated tire
+pressures reach both native Conti and Tesla TPMS field families in bar. Native
+labels perform the selected Bar/Psi conversion; the writer does not preconvert
+or alter the user's pressure-unit preference. Sensor calibration and physical
+TPMS transport are outside this display adapter.
 
 `runtime/display-link.py` reconciles supported preference changes from either
 display. The last common value identifies which peer changed. Simultaneous
@@ -227,6 +278,8 @@ Data lives under `$XDG_DATA_HOME/tsla-infotainment-lab`, normally
 | --- | --- |
 | `library.json` | Image references and checksums; imported images stay in place. |
 | `mounts/` | Read-only FUSE mounts keyed by image digest. |
+| `replacements/` | Private per-image copies of explicitly selected replacement files. |
+| `views/` | Read-only merged firmware mounts, released before the underlying image mounts. |
 | `engine/` | Stable copy of the repository's runtime sources. |
 | `session/` | Owned config, logs, generated adapters and browser/display profiles. |
 | `session/controls.json` | Current six driving inputs. |
@@ -238,7 +291,17 @@ Data lives under `$XDG_DATA_HOME/tsla-infotainment-lab`, normally
 | `ui-venv/` | Source launcher's dedicated Qt environment. |
 
 Public diagnostic exports use an allowlist. Firmware, recordings, GPS metadata,
-browser contents, credentials and raw logs are excluded. Map
-mounting establishes file availability. A street base map was observed after
-valid replay GPS in a session without an offline map mounted. This does not
-verify use of the supplied NA package, offline imagery or route computation.
+browser contents, credentials and raw logs are excluded.
+
+For selected TeslaMaps packages, `navigation.py` validates contained tile and
+address paths and generates a session-owned Valhalla configuration. The
+supervisor launches Valhalla and QtCarTMServer in the owned service, with private
+IPC paths, loopback TCP listeners and the firmware's expected AppArmor peer
+label. It configures the native map region, engine and address path through each
+process's private Qt settings. Stop and Restart manage both processes normally.
+The state writer sends raw display coordinates and scalar estimated GPS values
+with a fresh timestamp to the native localizer, including committed replay GPS.
+Readback verifies delivery and periodically restores values cleared by native
+reconnects. Routing tiles provide local route computation; the visible street
+or satellite imagery still comes from the network provider. Engine readiness
+does not establish address search, live traffic or broader build compatibility.

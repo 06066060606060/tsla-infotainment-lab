@@ -3,6 +3,22 @@ from infotainment_lab import config_csv as c
 SAMPLE = 'Name,Value\nAPP_fsd,0\nAUDIO_a2b,@invalid\nAPTRIAL_force,false\nVAPI_speed,1.5\n'
 
 
+def test_periodic_local_ui_overrides_require_opt_in_and_never_repeat_commands_or_car_config():
+    values = {'FEATURE_fullSelfDriving': True, 'GUI_enableStartFsdFromPark': True,
+              'GUI_startFsdButtonUnavailableReason': 'ReasonAutopilotUnavailable',
+              'GUI_startFsdButtonPressed': True, 'DAS_autopilotState': 'ACTIVE',
+              'GUI_other': 4, 'VAPI_driverAssist': 'TeslaAP3'}
+    assert not c.pending_overrides(values, values, {'VAPI_driverAssist'}, values)
+    assert not c.pending_overrides(values, values, {'VAPI_driverAssist'}, refresh=True)
+    selected = c.pending_overrides(values, values, {'VAPI_driverAssist'}, values, refresh=True)
+    assert selected == {name: values[name] for name in (
+        'FEATURE_fullSelfDriving', 'GUI_enableStartFsdFromPark')}
+    # A learned car-config key is never periodically resent, even if on the list.
+    assert not c.pending_overrides({'FEATURE_fullSelfDriving': True}, {'FEATURE_fullSelfDriving': True},
+                                   {'FEATURE_fullSelfDriving'}, ['FEATURE_fullSelfDriving'], refresh=True)
+    assert c.pending_overrides({'GUI_other': 5}, {'GUI_other': 4}, set()) == {'GUI_other': 5}
+
+
 def names(rows, **filters):
     return [r['name'] for r in rows if c.matches(r, **filters)]
 
@@ -102,3 +118,24 @@ def test_a_model3_dump_is_refused_unless_the_image_is_single_display():
     assert 'Model 3' in c.unsupported_car(values, single_display=False)
     assert c.unsupported_car(values, single_display=True) == ''
     assert c.unsupported_car({'VAPI_carType': 'ModelS2'}, single_display=False) == ''
+
+
+def test_model3_defaults_are_separate_and_match_the_single_display_layout():
+    sx, m3 = c.profile_defaults(False), c.profile_defaults(True)
+    assert sx['VAPI_carType'] == 'ModelX' and m3['VAPI_carType'] == 'Model3'
+    assert m3['VAPI_chassisType'] == '3' and m3['VAPI_airSuspension'] == 'None'
+    assert m3['GUI_carTypeFullName'] == 'Model 3'
+    assert m3['GUI_navVehicleCountry'] == 'USA'
+    assert m3['GUI_enableSourcePicker'] == 'true'
+    assert 'VAPI_carVersionString' in c.car_config(single_display=True)
+    for car in ('ModelS', 'ModelS2', 'ModelX'):
+        assert 'Model S/X' in c.unsupported_car({'VAPI_carType': car}, True)
+    assert c.unsupported_car({'GUI_ok': True}, True) == ''
+
+
+def test_model3_numeric_enum_labels_are_not_sent_as_ordinals():
+    assert c.coerce('3', 'VAPI_chassisType', True) == '3'
+    assert c.coerce('74', 'VAPI_trim', True) == '74'
+    assert c.coerce('USA', 'GUI_navVehicleCountry', True) == 'USA'
+    assert c.coerce('3', 'VAPI_chassisType', False) == 3
+    assert c.coerce('74', 'VAPI_batteryLevel', True) == 74

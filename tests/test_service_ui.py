@@ -69,6 +69,25 @@ def test_backend_runs_in_its_own_namespace_as_the_current_user(tmp_path):
     assert engine[-1] == tmp_path / 'odin'
 
 
+def test_service_backend_layout_is_detected_separately_from_odin_engine_assets(tmp_path):
+    assert supervisor.service_ui_directory(tmp_path) is None
+    for folder in ('opt/odin', 'opt/diag'):
+        directory = tmp_path / folder
+        directory.mkdir(parents=True)
+        (directory / 'service-ui').touch()
+        # A binary without its web assets cannot supply the native panel.
+        if folder == 'opt/odin':
+            assert supervisor.service_ui_directory(tmp_path) is None
+        (directory / 'service_ui').mkdir()
+        (directory / 'service_ui/index.html').touch()
+        assert supervisor.service_ui_directory(tmp_path) == directory
+    odin = tmp_path / 'opt/odin'
+    diag = supervisor.service_ui_directory(tmp_path)
+    backend, relay, engine = supervisor.service_ui_commands(odin, tmp_path / 'state', backend_directory=diag)
+    assert backend[-1] == tmp_path / 'opt/diag/service-ui'
+    assert engine[-1] == odin
+
+
 def test_namespace_relays_the_engine_port_only_when_given_a_socket(tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr(netns, 'namespace', lambda path, port, argv, engine=None: started.append((argv, engine)) or 0)

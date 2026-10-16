@@ -4,7 +4,7 @@ import pytest
 from infotainment_lab.vehicle_services import (
     CAPABILITIES, FIELD_SPECS, DisplayWriter, PreferenceSync, VehicleServices,
     decode_value, display_values, speed_display_values,
-    replay_location, equivalent, PREFERENCES, CENTER_CHANNELS, media_network_values,
+    replay_location, equivalent, PREFERENCES, CENTER_CHANNELS, media_network_values, navigation_fix,
 )
 
 
@@ -30,6 +30,16 @@ def test_complete_model_schema_roundtrip_and_partial_updates():
     assert VehicleServices.parse(changed.as_dict()) == changed
 
 
+def test_fsd_ui_simulation_is_explicit_and_does_not_change_vehicle_telemetry():
+    initial = VehicleServices.parse({})
+    assert initial.fsd_ui_simulation is False
+    simulated = initial.patched({'fsd_ui_simulation': True})
+    assert simulated.fsd_ui_simulation is True
+    assert display_values(simulated) == display_values(initial)
+    with pytest.raises(ValueError, match='must be true or false'):
+        initial.patched({'fsd_ui_simulation': 'true'})
+
+
 def test_model_maps_only_display_telemetry_and_reports_unverified_domains():
     model = VehicleServices.parse({"charging": True, "charge_power_kw": 11,
                                    "battery_percent": 62, "volume_pct": 25,
@@ -40,14 +50,15 @@ def test_model_maps_only_display_telemetry_and_reports_unverified_domains():
     assert values["battery_percent"]["VAPI_batteryLevel"] == 62
     assert values["volume_pct"] == {"GUI_audioVolume": 2}
     assert values["latitude_deg"]["LOC_geoValidFix"] is True
+    assert values['latitude_deg']['LOC_geoLocation'] == [37.5, -122.4]
     assert values["heading_deg"] == {"LOC_geoHdg": 0}
     assert values["driver_door_open"]["VAPI_driverDoorAlert"] is False
     assert values["passenger_door_open"]["VAPI_doorAlert"] is True
     assert values["headlights"]["LIGHT_headlightLeft"] == "Off"
     assert values["alarm_armed"]["VAPI_alarmStatus"] == "Disarmed"
     assert display_values(model.patched({"headlights": True}))["headlights"]["LIGHT_headlightLeft"] == "On"
-    assert values["tire_fl_bar"] == {}
-    assert CAPABILITIES["tires"]["mode"] == "local-model"
+    assert values['tire_fl_bar'] == {'TPMS_pressureFLConti': 2.9, 'TPMS_pressureFLTesla': 2.9}
+    assert CAPABILITIES['tires']['mode'] == 'local-display'
     assert not any(name.startswith(("DAS_", "AUTH_", "CAPI_"))
                    for group in values.values() for name in group)
 
@@ -57,6 +68,63 @@ def test_stopped_charging_and_disabled_gps_do_not_fake_active_sources():
     assert values["charge_power_kw"]["VAPI_chargerPower"] == 0
     assert values["latitude_deg"] == {"LOC_geoValidFix": False}
     assert "LOC_geoLat" not in values["latitude_deg"]
+
+
+def test_four_wheel_pressures_keep_bar_units_and_distinct_wheel_positions():
+    model = VehicleServices.parse({'tire_fl_bar': 0, 'tire_fr_bar': 2.7,
+                                   'tire_rl_bar': 2.8, 'tire_rr_bar': 5})
+    groups = display_values(model)
+    pressures = {name: value for field, group in groups.items() if field.startswith('tire_')
+                 for name, value in group.items()}
+    assert pressures == {'TPMS_pressureFLConti': 0, 'TPMS_pressureFLTesla': 0,
+                         'TPMS_pressureFRConti': 2.7, 'TPMS_pressureFRTesla': 2.7,
+                         'TPMS_pressureRLConti': 2.8, 'TPMS_pressureRLTesla': 2.8,
+                         'TPMS_pressureRRConti': 5, 'TPMS_pressureRRTesla': 5}
+    assert 'GUI_tirePressureUnits' not in pressures
+
+
+def test_park_assist_simulation_is_opt_in_and_clears_distances_when_disabled_or_failed():
+    initial = VehicleServices.parse({})
+    off = display_values(initial)
+    assert off['park_assist_fault'] == {'PARK_status': 'Disabled'}
+    assert off['park_front_left_cm'] == {'PARK_frontLeft': -1, 'PARK_USS_frontLeft': -1}
+    model = initial.patched({'park_assist_simulation': True, 'park_front_left_cm': 83.5,
+                              'park_rear_right_cm': 42})
+    healthy = display_values(model)
+    assert healthy['park_assist_fault'] == {'PARK_status': 'Enabled'}
+    assert healthy['park_assist_simulation'] == {
+        'PARK_USS_status': 'Enabled', 'PARK_service': 'None',
+        'PARK_sdiActive': True, 'PARK_sdiNoise': 'Nominal'}
+    assert healthy['park_front_left_cm'] == {'PARK_frontLeft': 83.5, 'PARK_USS_frontLeft': 83.5}
+    assert healthy['park_rear_right_cm'] == {'PARK_rearRight': 42, 'PARK_USS_rearRight': 42}
+    assert len([k for k in healthy if k.startswith('park_') and k.endswith('_cm')]) == 10
+    fault = display_values(model.patched({'park_assist_fault': True}))
+    assert fault['park_assist_fault'] == {'PARK_status': 'TemporaryFailure'}
+    assert fault['park_assist_simulation']['PARK_sdiActive'] is False
+    assert off['park_assist_simulation']['PARK_sdiActive'] is False
+    assert all(value == -1 for key, values in fault.items() if key.startswith('park_') and key.endswith('_cm')
+               for value in values.values())
+    assert display_values(model.patched({'park_assist_simulation': False}))['park_front_left_cm']['PARK_frontLeft'] == -1
+    assert CAPABILITIES['parking']['mode'] == 'local-display'
+
+
+@pytest.mark.parametrize('patch', [{'park_front_middle_cm': -1}, {'park_rear_left_cm': 251},
+                                  {'park_rear_middle_cm': float('nan')}, {'park_assist_simulation': 1}])
+def test_invalid_park_simulation_input_is_refused(patch):
+    with pytest.raises(ValueError):
+        VehicleServices.parse(patch)
+
+
+def test_navigation_origin_uses_the_requested_or_replay_fix_and_fresh_clock():
+    assert navigation_fix(VehicleServices(), 1234) == {'LOC_estimatedGPSValid': False}
+    model = VehicleServices.parse({'latitude_deg': -12.5, 'longitude_deg': 34.6})
+    fix = navigation_fix(model, 1234)
+    assert fix['LOC_estimatedLat'] == -12.5 and fix['LOC_estimatedLon'] == 34.6
+    assert fix['LOC_estimatedGPSValid'] and fix['LOC_estimatedHdg'] == 0
+    assert fix['LOC_estimatedGeoTimestamp'] == 1234.0
+    assert isinstance(fix['LOC_estimatedGeoTimestamp'], float)
+    assert navigation_fix(model, 1235)['LOC_estimatedGeoTimestamp'] == 1235.0
+    assert navigation_fix(model.patched({'heading_deg': 360}), 1235)['LOC_estimatedHdg'] == 0
 
 
 def test_control_api_units_are_independent_of_native_display_units():
@@ -161,6 +229,75 @@ def batch_calls(interface, method, arguments):
         value = getattr(interface, method)(*args, timeout=.3)
         result[name] = value if isinstance(value, tuple) else (value,)
     return result
+
+
+def test_startup_profile_verifies_readback_and_respects_overrides():
+    # Load only this worker function, without starting its D-Bus loop or threads.
+    import ast
+    from pathlib import Path
+    path = Path(__file__).parents[1] / 'infotainment_lab/runtime/keep-awake.py'
+    tree = ast.parse(path.read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'apply_vehicle_profile')
+    profile = {'speed': 1, 'ignored': 5, 'rejected': 4, 'unknown': 2}
+    scope = {'vehicle_profile': profile, 'config_values': {'speed': 10, 'GUI_language': 'English'},
+             'car_config': lambda: set(profile), 'DisplayWriter': DisplayWriter,
+             'typed': lambda v: v, 'call_many': batch_calls}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), scope)
+    display = FakeDisplay()
+    result = scope['apply_vehicle_profile'](display)
+    assert result == {'speed': 'accepted', 'ignored': 'mismatch', 'rejected': 'rejected', 'unknown': 'unsupported'}
+    assert display.values['speed'] == 10 and 'GUI_language' not in display.values
+    assert display.reads.count('ignored') == 2  # A successful setter with unchanged readback is not accepted.
+
+
+@pytest.mark.parametrize('batch', [None, batch_calls])
+def test_explicit_local_fsd_setting_recovers_from_later_native_default(batch):
+    from infotainment_lab.config_csv import pending_overrides
+    display = FakeDisplay()
+    display.values['FEATURE_fullSelfDriving'] = False
+    requested = {'FEATURE_fullSelfDriving': True}
+    writer = DisplayWriter(display, batch=batch)
+    assert writer.apply({'config': requested})[0] == {'config': 'accepted'}
+    display.values['FEATURE_fullSelfDriving'] = False  # A later firmware publisher replaces it.
+    todo = pending_overrides(requested, requested, set(), requested, refresh=True)
+    report, details = writer.apply({'config': todo}, verify_cached=True)
+    assert report == {'config': 'accepted'}
+    assert details['config']['FEATURE_fullSelfDriving'] == 'accepted'
+    assert display.values['FEATURE_fullSelfDriving'] is True
+    assert len(display.writes) == 2
+
+
+def test_numeric_vehicle_enum_labels_keep_their_string_type_on_readback():
+    display = FakeDisplay()
+    display.values.update(VAPI_chassisType='Y', VAPI_trim='74')
+    writer = DisplayWriter(display, batch=batch_calls)
+    report, details = writer.apply({'profile': {'VAPI_chassisType': '3', 'VAPI_trim': '74'}})
+    assert report == {'profile': 'accepted'}
+    assert details['profile'] == {'VAPI_chassisType': 'accepted', 'VAPI_trim': 'accepted'}
+    assert display.writes == [('VAPI_chassisType', '3')]
+    assert writer.read('VAPI_chassisType') == (True, '3')
+
+
+def test_native_coordinate_pair_has_verified_readback_and_restores_lost_location():
+    class CoordinateDisplay(FakeDisplay):
+        def __init__(self):
+            super().__init__()
+            self.values['LOC_geoLocation'] = '(0.000000 N, 0.000000 E)'
+
+        def DataSetValueRequest(self, name, value, timeout):
+            self.writes.append((name, value))
+            lat, lon = value
+            self.values[name] = f"({abs(lat):.6f} {'N' if lat >= 0 else 'S'}, {abs(lon):.6f} {'E' if lon >= 0 else 'W'})"
+            return True
+
+    display = CoordinateDisplay()
+    writer = DisplayWriter(display)
+    requested = {'gps': {'LOC_geoLocation': [-12.345678, 34.567891]}}
+    assert writer.apply(requested)[0] == {'gps': 'accepted'}
+    assert writer.read('LOC_geoLocation') == (True, [-12.345678, 34.567891])
+    display.values['LOC_geoLocation'] = '(0.000000 N, 0.000000 E)'
+    assert writer.apply(requested, verify_cached=True)[0] == {'gps': 'accepted'}
+    assert len(display.writes) == 2
 
 
 @pytest.mark.parametrize('batch', [None, batch_calls])

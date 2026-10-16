@@ -19,6 +19,7 @@ from browser import MODES, browser_arguments, media_browser_arguments, media_web
 from firmware_fonts import font_environment
 from host_graphics import environment as graphics_environment
 import config_csv
+import navigation
 from display_graphics import probe_display, application_environment
 from display_scale import scaled
 
@@ -31,10 +32,10 @@ restart_specs = {}
 service_retries = {}
 retry_after = {}
 RECOVERABLE = {'spotify', 'media-adapter', 'media-webapp', 'chromium-media', 'display-link',
-               'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin'}
+               'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin', 'valhalla', 'tm-server'}
 # The Service Mode panel's backend and browser. Their backend needs vehicle
 # identity the lab does not provide, so their exit must not mark the session degraded.
-OPTIONAL = {'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin'}
+OPTIONAL = {'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin', 'vehicle-observer'}
 # VAPI_carType values the firmware's libQtCarVAPI defines that keep-awake may also write.
 LANGUAGE_SETTINGS = {'GUI_language', 'GUI_manualLanguage', 'GUI_locale'}
 CAR_TYPES = ('ModelS', 'ModelS2', 'ModelX', 'Model3')
@@ -70,13 +71,24 @@ def port_free(port: int) -> bool:
     return True
 
 
-def service_ui_commands(odin: Path, state: Path, port: int = 8000) -> tuple[list, list, list]:
+def service_ui_directory(firmware: Path) -> Path | None:
+    """Newer ICE images separate the diagnostic web backend from Odin assets."""
+    for folder in ('opt/diag', 'opt/odin'):
+        directory = firmware / folder
+        if (directory / 'service-ui').is_file() and (directory / 'service_ui/index.html').is_file():
+            return directory
+    return None
+
+
+def service_ui_commands(odin: Path, state: Path, port: int = 8000,
+                        backend_directory: Path | None = None) -> tuple[list, list, list]:
     """The backend inside its own network namespace, the host relay to its port,
     and the Odin engine stand-in its namespace's engine port is relayed to."""
     sock, engine = state / 'service-ui.sock', state / 'odin-engine.sock'
     script = RUNTIME / 'service-ui-netns.py'
     backend = ['unshare', '--map-current-user', '--keep-caps', '-n',
-               '/usr/bin/python3', script, 'ns', sock, str(port), engine, '--', odin / 'service-ui']
+               '/usr/bin/python3', script, 'ns', sock, str(port), engine, '--',
+               (backend_directory or odin) / 'service-ui']
     return (backend, ['/usr/bin/python3', script, 'host', sock, str(port)],
             ['/usr/bin/python3', RUNTIME / 'odin-engine.py', engine, odin])
 
@@ -176,7 +188,7 @@ def drop_conflicting_override(state, counts, names, limit=3):
     return dropped
 
 
-def user_profile(state, base_profile: Path) -> Path:
+def user_profile(state, base_profile: Path, *, single_display=False, firmware_version=None, navigation_engine=None) -> Path:
     """The vehicle profile with the saved car-config values folded in, as if the json had been edited.
 
     The profile is the one path the firmware is built around: it is written once when a display
@@ -184,6 +196,10 @@ def user_profile(state, base_profile: Path) -> Path:
     """
     profile = json.loads(base_profile.read_text())
     signals = profile.setdefault('signals', {})
+    if single_display and firmware_version:
+        signals['VAPI_carVersionString'] = firmware_version
+    if navigation_engine:
+        signals['VAPI_navigationEngine'] = navigation_engine
     def saved(name, default):
         try:
             value = json.loads((state / name).read_text())
@@ -191,8 +207,8 @@ def user_profile(state, base_profile: Path) -> Path:
             return default
         return value if isinstance(value, type(default)) else default
 
-    if saved('config-values.json', {}).get('VAPI_carType') == 'Model3':
-        # This S/X layout has no Model 3 assets and the center segfaults; Model 3 needs single-display mode.
+    if config_csv.unsupported_car(saved('config-values.json', {}), single_display):
+        # Saved overrides must also match the selected firmware's interface.
         drop_conflicting_override(state, {}, ['VAPI_carType'], limit=1)
     overrides, learned = saved('config-values.json', {}), saved('car-config-learned.json', [])
     car = set(signals) | config_csv.CAR_CONFIG_EXTRA | set(learned)
@@ -200,6 +216,29 @@ def user_profile(state, base_profile: Path) -> Path:
     target = state / 'vehicle-profile.json'
     atomic_json(target, profile)
     return target
+
+
+def vehicle_environment(config, state):
+    """One vehicle identity for the profile writer, native UI and media services."""
+    single = bool(config.get('single_display'))
+    path = user_profile(state, config_csv.profile_path(single), single_display=single,
+                        firmware_version=config.get('firmware_version'),
+                        navigation_engine='Tesla' if config.get('maps') else None)
+    car = load_json(path, {}).get('signals', {}).get('VAPI_carType')
+    if car not in CAR_TYPES or config_csv.unsupported_car({'VAPI_carType': car}, single):
+        raise ValueError('The vehicle profile does not match this firmware layout.')
+    fsd_values = load_json(state / 'config-values.json', {})
+    fsd_explicit = load_json(state / 'config-explicit.json', [])
+    fsd_preview = single and isinstance(fsd_values, dict) and isinstance(fsd_explicit, list) and all(
+        name in fsd_explicit and str(fsd_values.get(name)).lower() == 'true'
+        for name in ('FEATURE_fullSelfDriving', 'GUI_fsdControlEnabled', 'GUI_enableStartFsdFromPark'))
+    return {'TESLA_NATIVE_CAR_TYPE': car, 'TESLA_NATIVE_VEHICLE_PROFILE': str(path),
+            'UI_PLATFORM': 'M3' if single else 'SX', 'UI_VEHICLE': car, 'UI_TARGET': 'ICE',
+            'TESLA_NATIVE_EXTENDED_VIZ': '1' if single else '0',
+            'TESLA_NATIVE_PARK_VIZ': '1' if single else '0',
+            'TESLA_NATIVE_FSD_PANEL_PREVIEW': '1' if fsd_preview else '0',
+            'TESLA_NATIVE_TPMS_NO_ASSET_SPINNER': '1' if single else '0',
+            'TESLA_NATIVE_DISPLAY_STATE_GUARD': '1' if single else '0'}
 
 
 def restart_allowance(state) -> int:
@@ -275,7 +314,33 @@ def cleanup():
         stream.close()
 
 
+def prepare_firmware_mounts(config):
+    """WSL's desktop and systemd can have distinct mount namespaces.
+
+    Re-establish owned mounts from inside the service before using the image.
+    The service cgroup also owns these FUSE workers until the session stops.
+    Prepared QEMU guests already mount their disks in the guest's namespace.
+    """
+    if not config.get('managed_mounts'):
+        return
+    import backend
+    with backend.firmware_files.lock(backend.DATA):
+        item = backend.library_item(config['firmware_id'])
+        root = backend.mounted_image(item)
+        profile = backend.profile_for(item['version'], item['variant'])
+        if item['kind'] != 'firmware' or not profile:
+            raise ValueError('The selected firmware has no compatible launch profile.')
+        backend.verify_builds(root, profile)
+        config['firmware'] = str(backend.firmware_view(item, root))
+        if config.get('map_id'):
+            maps = backend.library_item(config['map_id'])
+            if maps['kind'] != 'map':
+                raise ValueError('Select a map image for the map slot.')
+            config['maps'] = str(backend.mounted_image(maps))
+
+
 def outer(config: dict, config_path: Path):
+    prepare_firmware_mounts(config)
     state = Path(config["state"])
     env = dict(os.environ, DISPLAY=config["display"])
     if config["pulse"]:
@@ -283,7 +348,7 @@ def outer(config: dict, config_path: Path):
     if config["wsl"]:
         env.update(GALLIUM_DRIVER="d3d12", MESA_LOADER_DRIVER_OVERRIDE="d3d12")
         env = graphics_environment(env, is_wsl=True)
-    for name in ("native-netguard", "native-input", "native-compositor", "native-browser-input", "native-camera"):
+    for name in ("native-netguard", "native-input", "native-fsd", "native-compositor", "native-browser-input", "native-camera", "native-display-state", "native-assetgen", "native-traffic", "native-service-platform"):
         argv = ["gcc", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", RUNTIME / (name + ".c"),
                 "-o", state / (name + ".so"), "-ldl"]
         if name == "native-browser-input": argv += ["-lX11"]
@@ -444,43 +509,63 @@ def session(config: dict):
         check_media_ports()
     prepare_service_sockets()
     ui = firmware / "usr/tesla/UI"
+    nav = navigation.prepare(firmware, config.get('maps'), state)
+    if nav:
+        for port in (8002, 4400):
+            if not port_free(port):
+                raise RuntimeError(f'Offline navigation port {port} is already in use. Stop the other navigation session and retry.')
     scale = display_scale(config)
     base = dict(os.environ, TESLA_NATIVE_STATE=str(state), TESLA_FIRMWARE=str(firmware),
-                TESLA_NATIVE_CAR_TYPE="ModelX", TESLA_NATIVE_STATE_DELAY="0.2",
-                TESLA_NATIVE_VEHICLE_PROFILE=str(user_profile(state, RUNTIME / "vehicle-profile-model-x-mcu2.json")),
+                TESLA_NATIVE_STATE_DELAY="0.2",
                 TESLA_NATIVE_TITLE="Infotainment Lab | Center", TESLA_HOST_DISPLAY=config["display"],
-                TESLA_DV_SERVICES="com.tesla.CenterDisplay" + (",com.tesla.ClusterDisplay" if config["cluster"] else ""))
+                TESLA_DV_SERVICES="com.tesla.CenterDisplay" + (",com.tesla.ClusterDisplay" if config["cluster"] else "")
+                                  + (",com.tesla.TMServer" if nav else ""))
+    base.update(vehicle_environment(config, state))
+    print(f"Vehicle profile: {base['TESLA_NATIVE_CAR_TYPE']} ({base['UI_PLATFORM']}/{base['UI_TARGET']})", flush=True)
     if config.get("display_backend") == "provided":
         base["TESLA_EXTERNAL_DISPLAY"] = "1"
     base["DBUS_SYSTEM_BUS_ADDRESS"] = base["DBUS_SESSION_BUS_ADDRESS"]
-    car_type = json.loads(Path(base["TESLA_NATIVE_VEHICLE_PROFILE"]).read_text()).get("signals", {}).get("VAPI_carType")
-    if car_type in CAR_TYPES:
-        base["TESLA_NATIVE_CAR_TYPE"] = car_type  # the keep-awake writer must agree with the profile
-    if config.get("single_display"):
-        base["TESLA_NATIVE_CAR_TYPE"] = "Model3"
-        base["TESLA_NATIVE_VEHICLE_PROFILE"] = ""
     (state / "dbus-address").write_text(base["DBUS_SESSION_BUS_ADDRESS"])
     shutil.copyfile(RUNTIME / "audio-wslg.conf", state / "audio.conf")
     base["ALSA_CONFIG_PATH"] = str(state / "audio.conf")
     base.update(font_environment(firmware, state))
-    for home in ("center-home", "cluster-home", "apviz-home"):
+    for home in ("center-home", "cluster-home", "apviz-home", "vehicle-observer-home"):
         for folder in ("car", "data", "logs"):
             (state / home / ".Tesla" / folder).mkdir(parents=True, exist_ok=True)
         shutil.copyfile(RUNTIME / "display-settings-mcu2.conf", state / home / ".Tesla/car/settings.conf")
+        navigation.configure_home(state / home, nav)
     launch("host-state", ["/usr/bin/python3", RUNTIME / "keep-awake.py"], state, base)
+    launch('os-traffic', ['/usr/bin/python3', HERE / 'native_traffic.py'], state, base)
     launch("camera-feed", ["/usr/bin/python3", RUNTIME / "camera-feed.py"], state, base)
     if config['browser']:
         launch('browser-page', ['/usr/bin/python3', RUNTIME / 'browser-page.py'], state, base)
-    gui = dict(base, UI_PLATFORM="SX", UI_VEHICLE="ModelX", UI_TARGET="ICE", TESLA_HOME=str(ui),
+    gui = dict(base, TESLA_HOME=str(ui),
                TESLA_BIN=str(ui / "bin"), TESLA_LIB=str(ui / "lib"), QT_PLUGIN_PATH=str(firmware / "usr/lib/qt/plugins"),
                QT_X11_NO_MITSHM="1", QT_NO_GLIB="1", EGL_PLATFORM="x11",
                LD_LIBRARY_PATH=f"{ui}/lib:{ui}/bin:{firmware}/usr/lib/engines-3:{firmware}/usr/lib/lmms:/usr/lib/x86_64-linux-gnu:{firmware}/usr/lib",
                TESLA_FORCE_NATIVE_APVIZ="1", TESLA_NATIVE_APVIZ_CPU_UPLOAD="1", TESLA_NATIVE_APVIZ_REFRESH_MS="33", TESLA_NATIVE_APVIZ_TRACE="0")
+    asset_generation = config.get('single_display') and all(path.is_file() for path in
+        (firmware / 'usr/bin/godot', ui / 'assets/ap_visualization.zip', ui / 'lib/libApVizGodot.so'))
+    if asset_generation:
+        cache = state / 'assetgen-home/.Tesla/data'
+        (cache / 'AssetGen').mkdir(parents=True, exist_ok=True)
+        gui['TESLA_NATIVE_ASSET_DATA'] = str(cache)
     guard = f"{state}/native-netguard.so"  # Tesla's domains never resolve for firmware processes
-    preloads = f"{guard}:{state}/native-input.so:{state}/native-compositor.so"
-    if config.get("single_display"):
-        gui.update(UI_PLATFORM="M3", UI_VEHICLE="Model3", UI_TARGET="MCU")
+    preloads = f"{guard}:{state}/native-input.so:{state}/native-compositor.so:{state}/native-display-state.so"
+    if config.get('single_display'):
+        preloads += f':{state}/native-fsd.so'
+    preloads += f':{state}/native-traffic.so'
+    gui['TESLA_NATIVE_TRAFFIC_SOCKET'] = str(state / 'native-traffic.sock')
+    if asset_generation:
+        preloads += f':{state}/native-assetgen.so'
     addresses = ["--cid", "127.0.0.100", "--ic", "127.0.0.101", "--gw", "127.0.0.102", "--ap", "127.0.0.103"]
+    if nav:
+        launch('valhalla', navigation.engine_arguments(firmware, nav), state,
+               dict(gui, HOME=str(state / 'navigation'), LD_PRELOAD=guard))
+        navigation.configure_home(nav['home'], nav)
+        launch('tm-server', confined('/usr/tesla/UI/bin/QtCarTMServer',
+               [ui / 'bin/QtCarTMServer', '--gw', '127.0.0.102']), state,
+               dict(gui, HOME=str(nav['home']), LD_PRELOAD=guard, TESLA_NATIVE_SERVICE_LOOPBACK='1'))
     if config['browser']:
         for name, executable in (('spotify', 'SpotifyServer'), ('media-adapter', 'ChromiumAdapter')):
             home = state / (name + '-home')
@@ -494,13 +579,15 @@ def session(config: dict):
             usage = probe.stdout + probe.stderr
         except (OSError, subprocess.SubprocessError):
             usage = ''
-        argv, dropped = media_webapp_arguments(firmware, config.get('firmware_version', '2026.26.6.1'), usage)
+        argv, dropped = media_webapp_arguments(firmware, config.get('firmware_version', '2026.26.6.1'), usage,
+                                              car_type=base['TESLA_NATIVE_CAR_TYPE'])
         if dropped:
             print('media-webapp-server does not define ' + ', '.join('-' + name for name in dropped) + '; omitted', flush=True)
         # Go's own resolver would bypass the preload; cgo resolution goes through libc.
         launch('media-webapp', argv, state, dict(base, LD_PRELOAD=guard, GODEBUG='netdns=cgo'))
     odin = firmware / 'opt/odin'
-    service_ui = bool(config['browser']) and (odin / 'service-ui').is_file() and (odin / 'service_ui/index.html').is_file()
+    service_directory = service_ui_directory(firmware)
+    service_ui = bool(config['browser']) and service_directory is not None
     if service_ui and not all(shutil.which(tool) for tool in ('unshare', 'setpriv', 'ip')):
         print('unshare, setpriv or ip is missing; the Service Mode panel will stay unavailable.', flush=True)
         service_ui = False
@@ -519,10 +606,14 @@ def session(config: dict):
         # It keeps its own token and identity checks; none are supplied or bypassed.
         home = state / 'service-ui-home'
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        backend, relay, engine = service_ui_commands(odin, state)
+        product = home / 'jcanproduct'
+        product.write_text(base['TESLA_NATIVE_CAR_TYPE'] + '\n')
+        backend, relay, engine = service_ui_commands(odin, state, backend_directory=service_directory)
         # Stands in for the vehicle's odin-engine: the task catalogue and configs from the image, no diagnostics.
         launch('odin-engine', engine, state, base)
-        launch('service-ui', backend, state, dict(base, HOME=str(home)), cwd=odin)
+        launch('service-ui', backend, state, dict(base, HOME=str(home),
+               LD_PRELOAD=f'{guard}:{state}/native-service-platform.so',
+               TESLA_NATIVE_SERVICE_PRODUCT=str(product)), cwd=service_directory)
         launch('service-ui-relay', relay, state, base)
     launch("center", confined("/usr/tesla/UI/bin/QtCar",
                      [ui / "bin/QtCar", "-graphicssystem", "raster" if config.get("single_display") else "opengl", "--touch", "mouse", "--window", "%g" % ((1 if config.get("single_display") else .6) * scale),
@@ -545,6 +636,7 @@ def session(config: dict):
     layout_checked = center_checked = 0
     browser_started, viz_started, link_started, media_started = set(), False, False, False
     browser_retries = {mode: 0 for mode in MODES}
+    vehicle_observer_started = False
     while not stopping:
         elapsed = time.time() - started
         for name in ("center", "instruments", "host-state"):
@@ -563,6 +655,12 @@ def session(config: dict):
         if config["cluster"] and elapsed > 4 and not link_started:
             launch("display-link", ["/usr/bin/python3", RUNTIME / "display-link.py"], state, base)
             link_started = True
+        if config.get('single_display') and elapsed > 12 and not vehicle_observer_started:
+            if (ui / 'bin/QtCarVehicle').is_file() and shutil.which('unshare') and shutil.which('mount'):
+                launch('vehicle-observer', ['/usr/bin/python3', HERE / 'native_vehicle.py'], state,
+                       dict(gui, HOME=str(state / 'vehicle-observer-home'), DISPLAY=config['center_display'],
+                            LD_PRELOAD=f'{guard}:{state}/native-traffic.so'), cwd=ui)
+            vehicle_observer_started = True
         if config["browser"] and elapsed > 6:
             browser_env = dict(base, DISPLAY=config["center_display"], LD_LIBRARY_PATH=str(firmware / "usr/lib/tesla-chromium"))
             if not media_started:
@@ -585,10 +683,15 @@ def session(config: dict):
                            LD_LIBRARY_PATH=f"{ui}/lib:/usr/lib/x86_64-linux-gnu:{firmware}/usr/lib",
                            LD_PRELOAD=f"{guard}:/usr/lib/x86_64-linux-gnu/libGL.so.1:/usr/lib/x86_64-linux-gnu/libGLX.so.0:/usr/lib/x86_64-linux-gnu/libOpenGL.so.0:/usr/lib/x86_64-linux-gnu/libEGL.so.1")
             viz_env = application_environment(config, 'center' if config.get('single_display') else 'cluster', viz_env)
+            if asset_generation:
+                viz_env['LD_PRELOAD'] += f':{state}/native-assetgen.so'
             launch("visualization", [firmware / "usr/bin/godot", "--main-pack", ui / "assets/ap_visualization.zip",
                                      "--resolution", "%dx%d" % scaled((740, 1100) if config.get("single_display") else (600, 480), scale), "--app", ui / "lib/libApVizGodot.so", "--audio-driver", "Dummy",
                                      "--video-driver", "GLES2", "--glmsaa", "0", "--ip", "127.0.0.100" if config.get("single_display") else "127.0.0.101"], state, viz_env)
             viz_started = True
+            if asset_generation:
+                launch('asset-generator', ['/usr/bin/python3', HERE / 'asset_generation.py'], state,
+                       dict(viz_env, TESLA_HOME=str(ui)), cwd=ui)
         recover_services(time.monotonic())
         components = {name: ("running" if process.poll() is None else "exited") for name, process in children.items()}
         phase = session_phase(elapsed, positioned, components)
@@ -596,6 +699,7 @@ def session(config: dict):
                     "renderer": config["renderer"], "accelerated": config["accelerated"], "components": components,
                     "display_graphics": config.get('display_graphics', {}), "updated_at": time.time(),
                     "map_mounted": bool(config["maps"]), "browser_restarts": browser_retries,
+                    "navigation": navigation.status(nav, components, state),
                     "service_restarts": service_retries,
                     "configuration_restarts": config.get('configuration_restarts', 0)})
         time.sleep(1)

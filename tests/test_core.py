@@ -66,6 +66,9 @@ def test_park_resets_motion_and_telemetry_has_explicit_units():
     assert values['speed_kph']['VAPI_displaySpeed'] == 36
     assert values['gear']['LOC_playbackShiftState'] == 'D'
     assert values['gear']['VAPI_vehicleDirection'] == 0
+    assert values['gear']['VAPI_parkBrakeApplied'] is False
+    assert values['gear']['VAPI_telltaleParkingBrakeAmber'] == 'Off'
+    assert display_values(parked)['gear']['VAPI_parkBrakeApplied'] is True
     assert values['steering_deg']['VAPI_roadWheelAngle'] == pytest.approx(-90 / 14.8)
     assert values['steering_deg']['VAPI_steeringAngle'] == -90
     assert values['steering_deg']['LOC_playbackSteeringAngle'] == 90

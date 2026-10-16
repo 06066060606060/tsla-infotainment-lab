@@ -1,11 +1,14 @@
 """Desktop controls for browser views, recorded drives and local vehicle state."""
 import json
+import csv
+import io
 import re
 import shlex
 import os
 from PySide6.QtCore import Qt, QProcess, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QApplication, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget, QFrame)
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QApplication, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget, QFrame,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 
 from .material_widgets import MaterialSwitch as QCheckBox
 from .vehicle_services import FIELD_SPECS, VehicleServices
@@ -173,11 +176,28 @@ class ServicesPanel(Panel):
         self.layout.addWidget(self.tabs)
         defaults = VehicleServices().as_dict()
         for group, en in (('climate', 'Climate'), ('closures', 'Doors'), ('lights', 'Lights'),
-                               ('energy', 'Energy'), ('audio', 'Audio'), ('navigation', 'Navigation'), ('tires', 'Tires'), ('modes', 'Modes')):
+                               ('energy', 'Energy'), ('audio', 'Audio'), ('navigation', 'Navigation'), ('tires', 'Tires'),
+                               ('parking', 'Park Assist'), ('driver_assistance', 'Self-Driving simulation'),
+                               ('modes', 'Modes')):
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(20, 24, 20, 24)
             form.setSpacing(14)
+            if group == 'parking':
+                notice = QLabel('Local simulation: adjustable ultrasonic distances only. No camera detection or automatic steering. '
+                                'In Vehicle config, enable FEATURE_parkAssistEnabled, select Valeo or Tesla for '
+                                'VAPI_parkAssist, and disable GUI_useVisionParkAssist.')
+                notice.setWordWrap(True)
+                notice.setObjectName('notice')
+                form.addRow(notice)
+            if group == 'driver_assistance':
+                notice = QLabel('Model 3 lab interface simulation. The native Start/Stop button changes the displayed '
+                                'FSD state only; speed, gear and steering remain under your control. '
+                                'Requires the FSD menus and Start from Park preferences to be enabled, then a device restart. '
+                                'Once that layout is ready, this switch applies immediately. Each restart begins disengaged.')
+                notice.setWordWrap(True)
+                notice.setObjectName('notice')
+                form.addRow(notice)
             for name, spec in FIELD_SPECS.items():
                 if spec['group'] != group: continue
                 value = defaults[name]
@@ -218,7 +238,7 @@ class ServicesPanel(Panel):
         self.power_slider.setAccessibleName(FIELD_SPECS['power_level']['label'])
         self.power_slider.valueChanged.connect(spin.setValue)
         self.feedback = self.text('', 'notice')
-        self.text('The local model covers climate, body indicators, energy, audio and trip data. Tire pressure remains a local value. Connected accounts, physical vehicle hardware and live traffic require their own services.')
+        self.text('The local model covers climate, body indicators, energy, audio, trip data and simulated tire pressure. Native tire pressure follows the selected display units. Connected accounts, physical vehicle hardware and live traffic require their own services.')
         self.layout.addStretch()
 
     def sync_power(self):
@@ -336,167 +356,213 @@ class ServicesPanel(Panel):
 
 
 class CanPanel(Panel):
-    """Read and write frames through the emulated gateway.
-
-    The gateway starts locked: write requests from this panel are refused until
-    the lab unlock handshake succeeds. The secret below is this lab's own shared
-    value, not a vehicle credential.
-    """
-
-    CHANNELS = (('veh', 'VEH · vehicle'), ('ch', 'CHASSIS'),
-                ('party', 'PARTY · diagnostic'))
+    """Observe native OS traffic and configure explicit local frame echo rules."""
 
     def __init__(self, window):
         super().__init__(window)
-        self.since = 0
-        self.awaiting_unlock = False
-        self.text('CAN bus and gateway', 'subtitle')
-        self.text('An emulated gateway routes frames between the local channels and the infotainment Ethernet side. '
-                  'Definitions and identifiers are this lab’s own; a decoded value is not evidence about a vehicle.')
-        row = QHBoxLayout()
-        self.backend_box = QComboBox()
-        for key, en in (('auto', 'Automatic transport'),
-                            ('socketcan', 'SocketCAN (vcan)'),
-                            ('software', 'Software hub')):
-            self.backend_box.addItem(en, key)
-        self.backend_box.setAccessibleName('CAN transport')
-        row.addWidget(self.backend_box)
-        row.addWidget(window.button('Start service', self.start_service))
-        row.addWidget(window.button('Refresh', self.refresh))
-        self.layout.addLayout(row)
-
-        unlock_row = QHBoxLayout()
-        self.secret = QLineEdit('infotainment-lab')
-        self.secret.setAccessibleName('Gateway lab secret')
-        self.secret.setPlaceholderText('Gateway lab secret')
-        unlock_row.addWidget(self.secret, 1)
-        unlock_row.addWidget(window.button('Unlock gateway', self.unlock))
-        unlock_row.addWidget(window.button('Lock', lambda: self.request({'action': 'lock'})))
-        self.layout.addLayout(unlock_row)
-        self.state = self.text('Start the service to see the channels.', 'notice')
-
-        send_row = QHBoxLayout()
-        self.channel = QComboBox()
-        for key, en in self.CHANNELS:
-            self.channel.addItem(en, key)
-        self.channel.setAccessibleName('Channel')
-        send_row.addWidget(self.channel)
-        self.identifier = QLineEdit()
-        self.identifier.setPlaceholderText('Identifier, for example 0x2E5')
-        self.identifier.setAccessibleName('Frame identifier')
-        send_row.addWidget(self.identifier)
-        self.payload = QLineEdit()
-        self.payload.setPlaceholderText('Payload bytes, for example 21 04 00')
-        self.payload.setAccessibleName('Frame payload')
-        send_row.addWidget(self.payload, 1)
-        self.origin = QComboBox()
-        for key, en in (('ethernet', 'Through the gateway'), ('bus', 'Inject on the channel')):
-            self.origin.addItem(en, key)
-        self.origin.setAccessibleName('Write path')
-        send_row.addWidget(self.origin)
-        send_row.addWidget(window.button('Send frame', self.send_frame))
-        self.layout.addLayout(send_row)
-        self.result = self.text('', 'notice')
-
-        self.trace = QLineEdit()
-        self.trace.setReadOnly(True)
-        self.trace.setAccessibleName('Last decoded frame')
-        self.layout.addWidget(self.trace)
-        self.frames = QLabel('')
-        self.frames.setObjectName('muted')
-        self.frames.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.frames.setWordWrap(False)
-        self.layout.addWidget(self.frames)
+        self.build_observer()
+        from .frame_injection_panel import FrameInjectionPanel
+        self.injection = FrameInjectionPanel(window, self.selected_frame)
+        self.layout.addWidget(self.injection)
         self.layout.addStretch()
+
+    def selected_frame(self):
+        row = self.raw_observation.currentRow()
+        return self.displayed_frames[row] if 0 <= row < len(self.displayed_frames) else None
+
+    def build_observer(self):
+        self.observed_frames = []
+        self.displayed_frames = []
+        self.updating_observation = False
+        self.selected_observed_id = None
+        self.pending_observation_dbc = None
+        self.text('OS traffic observation', 'subtitle')
+        self.text('Vehicle buses: Party, Chassis and Body (also called VH). '
+                  'This view records requests made by the running OS. Gateway Ethernet messages '
+                  'are labelled separately; their identifiers do not prove which CAN bus carries them.')
+        row = QHBoxLayout()
+        self.observation_bus = QComboBox()
+        for key, name in (('', 'All observed traffic'), ('party', 'Party'), ('chassis', 'Chassis'),
+                          ('body', 'Body / VH'), ('gateway', 'Gateway / Ethernet')):
+            self.observation_bus.addItem(name, key)
+        self.observation_bus.setAccessibleName('Observed bus')
+        self.observation_bus.currentIndexChanged.connect(self.render_observation)
+        row.addWidget(self.observation_bus)
+        self.observation_direction = QComboBox()
+        for key, name in (('TX', 'Network sends'), ('TX request', 'Gateway API requests'), ('', 'Both observation points')):
+            self.observation_direction.addItem(name, key)
+        self.observation_direction.setAccessibleName('OS observation point')
+        self.observation_direction.currentIndexChanged.connect(self.render_observation)
+        row.addWidget(self.observation_direction)
+        self.observation_filter = QLineEdit()
+        self.observation_filter.setPlaceholderText('Filter ID, message or signal')
+        self.observation_filter.setMinimumWidth(180)
+        self.observation_filter.setAccessibleName('Observed traffic filter')
+        self.observation_filter.textChanged.connect(self.render_observation)
+        row.addWidget(self.observation_filter, 1)
+        self.pause_observation = QCheckBox('Pause display')
+        row.addWidget(self.pause_observation)
+        self.layout.addLayout(row)
+        actions = QHBoxLayout()
+        actions.addWidget(self.window.button('Refresh OS traffic', self.observe))
+        actions.addWidget(self.window.button('Choose DBC', self.choose_observation_dbc))
+        actions.addWidget(self.window.button('Frame injection ↓', self.focus_injection))
+        actions.addWidget(self.window.button('Copy raw CSV', lambda: self.copy_observation(False)))
+        actions.addWidget(self.window.button('Copy decoded CSV', lambda: self.copy_observation(True)))
+        actions.addStretch()
+        self.layout.addLayout(actions)
+        self.observation_state = self.text('Start or restart the device to observe its OS traffic.', 'notice')
+        self.observation_notice = self.text('No raw Party, Chassis or Body frames observed.')
+        self.observation_dbc = self.text('DBC: none selected')
+        self.raw_observation = QTableWidget(0, 9)
+        self.raw_observation.setHorizontalHeaderLabels(('Timestamp ms', 'Bus', 'Direction', 'ID', 'EXT', 'RTR', 'Length', 'Data', 'Message'))
+        self.raw_observation.setAccessibleName('Observed OS raw frames')
+        self.raw_observation.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.raw_observation.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.raw_observation.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.raw_observation.setMinimumHeight(260)
+        self.raw_observation.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.raw_observation.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
+        self.raw_observation.itemSelectionChanged.connect(self.render_selected_observation)
+        self.layout.addWidget(self.raw_observation)
+        self.decoded_caption = self.text('Select a frame to inspect its decoded signals.')
+        self.decoded_observation = QTableWidget(0, 3)
+        self.decoded_observation.setHorizontalHeaderLabels(('Signal', 'Value', 'Unit'))
+        self.decoded_observation.setAccessibleName('Observed OS decoded signals')
+        self.decoded_observation.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.decoded_observation.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.decoded_observation.setMinimumHeight(180)
+        self.layout.addWidget(self.decoded_observation)
+        self.observation_timer = QTimer(self)
+        self.observation_timer.setInterval(1000)
+        self.observation_timer.timeout.connect(self.observe)
+
+    def focus_injection(self):
+        self.window.pages.widget(6).verticalScrollBar().setValue(self.injection.y())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.observation_timer.start()
+        self.observe()
+
+    def hideEvent(self, event):
+        self.observation_timer.stop()
+        super().hideEvent(event)
+
+    def observe(self):
+        if self.pending_observation_dbc:
+            if self.window.bridge.call('can', '--payload', json.dumps({'action': 'os-dbc'}),
+                                       '--path', self.pending_observation_dbc):
+                self.pending_observation_dbc = None
+            return
+        self.injection.flush()
+        self.request({'action': 'os-trace'})
+
+    def choose_observation_dbc(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose observation DBC', '', 'CAN database (*.dbc)')
+        if path:
+            self.pending_observation_dbc = path
+            self.observed_frames = []
+            self.render_observation()
+            self.observe()
+
+    def receive_observation(self, data):
+        if data.get('state') == 'stopped':
+            self.injection.stopped()
+        else:
+            self.injection.render(data.get('injection', {}))
+        if self.pause_observation.isChecked():
+            return
+        self.observed_frames = data.get('frames', [])
+        self.observation_state.setText(' · '.join((
+            'OS observer: ' + data.get('state', 'stopped'),
+            'Vehicle emitter: ' + data.get('emitter', {}).get('state', 'unavailable'),
+            str(data.get('records', 0)) + ' requests/records observed',
+            str(data.get('catalog_messages', 0)) + ' native message definitions')))
+        self.observation_notice.setText(data.get('notice', '') +
+            '\nNo raw Party, Chassis or Body frames observed. Times are relative to observer startup.')
+        self.observation_dbc.setText('DBC: ' + (data.get('dbc') or 'none selected') +
+                                     (' · ' + data['dbc_error'] if data.get('dbc_error') else ''))
+        self.render_observation()
+
+    def render_observation(self, *_):
+        if not hasattr(self, 'raw_observation'):
+            return
+        bus = self.observation_bus.currentData()
+        direction = self.observation_direction.currentData()
+        query = self.observation_filter.text().strip().lower()
+        self.displayed_frames = [f for f in reversed(self.observed_frames)
+            if (not bus or f.get('bus') == bus) and
+               (not direction or f.get('direction') == direction) and
+               (not query or query in (f.get('id_hex', '') + ' ' + f.get('message', '') + ' ' +
+                                      ' '.join(s['signal'] for s in f.get('signals', []))).lower())][:128]
+        self.updating_observation = True
+        self.raw_observation.setRowCount(len(self.displayed_frames))
+        chosen = None
+        for row, frame in enumerate(self.displayed_frames):
+            values = (frame.get('timestamp_ms'), frame.get('bus'), frame.get('direction'), frame.get('id_hex'),
+                      frame.get('extended'), frame.get('rtr'), frame.get('length'), frame.get('data'), frame.get('message'))
+            for col, value in enumerate(values):
+                self.raw_observation.setItem(row, col, QTableWidgetItem('—' if value is None else str(value)))
+            if frame.get('id') == self.selected_observed_id and chosen is None:
+                chosen = row
+        self.updating_observation = False
+        if self.displayed_frames:
+            self.raw_observation.selectRow(chosen if chosen is not None else 0)
+        self.render_selected_observation()
+
+    def render_selected_observation(self):
+        if self.updating_observation:
+            return
+        row = self.raw_observation.currentRow()
+        frame = self.displayed_frames[row] if 0 <= row < len(self.displayed_frames) else {}
+        self.selected_observed_id = frame.get('id')
+        signals = frame.get('signals', [])
+        self.decoded_caption.setText(' · '.join(filter(None, (frame.get('message'),
+            frame.get('decode_note'), '' if signals else 'No decoded signals available for this frame.'))))
+        self.decoded_observation.setRowCount(len(signals))
+        for row, field in enumerate(signals):
+            for col, key in enumerate(('signal', 'value', 'unit')):
+                value = field.get(key, '')
+                if isinstance(value, float):
+                    value = f'{value:.9g}'
+                self.decoded_observation.setItem(row, col, QTableWidgetItem(str(value)))
+
+    def copy_observation(self, decoded):
+        output = io.StringIO()
+        writer = csv.writer(output, delimiter=';', lineterminator='\n')
+        if decoded:
+            writer.writerow(('timestamp_ms', 'can_id', 'message', 'signal', 'value', 'unit', 'bus', 'direction'))
+            for frame in reversed(self.displayed_frames):
+                for signal in frame.get('signals', []):
+                    writer.writerow((frame['timestamp_ms'], frame['id_hex'], frame['message'],
+                        signal['signal'], signal['value'], signal['unit'], frame['bus'], frame['direction']))
+        else:
+            writer.writerow(('timestamp_ms', 'id', 'extended', 'rtr', 'dlc', 'data', 'bus', 'direction', 'transport'))
+            for frame in reversed(self.displayed_frames):
+                writer.writerow(tuple(frame.get(key, '') for key in
+                    ('timestamp_ms', 'id_hex', 'extended', 'rtr', 'length', 'data', 'bus', 'direction', 'transport')))
+        QApplication.clipboard().setText(output.getvalue())
 
     # -- requests ---------------------------------------------------------
     def request(self, payload):
         return self.window.bridge.call('can', '--payload', json.dumps(payload))
 
-    def start_service(self):
-        self.window.bridge.call('can-start', '--can-backend', self.backend_box.currentData())
-
-    def refresh(self):
-        self.window.bridge.call('can-status')
-        self.request({'action': 'trace', 'limit': 40, 'since': self.since})
-
-    def unlock(self):
-        self.awaiting_unlock = True
-        self.request({'action': 'challenge'})
-
-    def send_frame(self):
-        identifier = self.identifier.text().strip()
-        if not identifier:
-            self.result.setText('Enter an identifier first.')
-            return
-        self.request({'action': 'send', 'origin': self.origin.currentData(),
-                      'frame': {'channel': self.channel.currentData(), 'id': identifier,
-                                'data': self.payload.text().strip()}})
-
-    # -- responses --------------------------------------------------------
     def received(self, action, result):
-        if action not in ('can', 'can-start', 'can-status'):
+        if action != 'can':
+            return
+        if self.injection.inflight:
+            self.injection.received(result)
             return
         if not result.get('ok'):
-            self.awaiting_unlock = False
-            self.result.setText(result.get('error', ''))
+            self.observation_state.setText(result.get('error', ''))
             return
         data = result.get('data', {})
-        if self.awaiting_unlock and 'challenge' in data:
-            import hashlib
-            import hmac
-            self.awaiting_unlock = False
-            response = hmac.new(self.secret.text().encode(), bytes.fromhex(data['challenge']),
-                                hashlib.sha256).hexdigest()[:32]
-            self.request({'action': 'unlock', 'response': response})
-            return
-        if 'frames' in data:
-            self.render_frames(data['frames'])
-            self.since = data.get('now', self.since)
-            return
-        if 'allowed' in data:
-            reason = data.get('reason') or ''
-            self.result.setText('Routed through ' + str(data.get('route'))
-                                if data['allowed'] else 'Refused: ' + reason)
-            return
-        if 'unlocked' in data and 'gateway' not in data:
-            self.result.setText('Gateway unlocked for this session.'
-                                if data['unlocked'] else 'Gateway locked.')
-            return
-        self.render_status(data)
-
-    def render_status(self, data):
-        if data.get('service') != 'running':
-            self.state.setText('The CAN service is stopped.')
-            return
-        gateway = data.get('gateway', {})
-        counters = gateway.get('counters', {})
-        channels = ', '.join(f"{item['channel']}:{item['received']}" for item in gateway.get('channels', []))
-        if 'follow_session' not in data:
-            source = 'older service running · restart it'
-        elif data.get('follow_session'):
-            source = 'following the session'
-        else:
-            source = 'panel state only'
-        self.state.setText(' · '.join(filter(None, (
-            'Transport: ' + str(gateway.get('backend')),
-            source,
-            'Unlocked' if gateway.get('unlocked') else 'Locked',
-            channels,
-            'routed ' + str(counters.get('routed', 0)),
-            'blocked ' + str(counters.get('blocked', 0) + counters.get('unknown', 0))))))
-
-    def render_frames(self, frames):
-        if not frames:
-            return
-        lines = []
-        for item in frames[-16:]:
-            signals = item.get('signals') or {}
-            summary = ' '.join(f'{name}={value}' for name, value in list(signals.items())[:4])
-            lines.append(f"{item['channel']:<5} {item['id_hex']:>4}  {item['data']:<24} "
-                         f"{item.get('name', '')} {summary}")
-        self.frames.setText('\n'.join(lines))
-        self.trace.setText(lines[-1].strip())
+        if data.get('observation'):
+            self.receive_observation(data)
+        elif data.get('os_dbc'):
+            self.observation_dbc.setText('DBC: ' + data.get('dbc', ''))
+            self.observe()
 
 
 # The CID is the read-only firmware root the session runs from ($R). Enter it through a user

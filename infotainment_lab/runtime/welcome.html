@@ -1,18 +1,27 @@
 <!doctype html>
-<html lang="en"><meta charset="utf-8"><title>Infotainment Lab</title>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Browser test · Infotainment Lab</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#10191e;color:#edf4f5;font:22px system-ui}main{max-width:980px;margin:42px auto;padding:24px}small{color:#68d7ba;letter-spacing:3px}h1{font-size:44px;margin:14px 0}h2{font-size:26px;margin:18px 0 10px}p{color:#9caeb9;line-height:1.5}a,button{display:inline-block;padding:12px 18px;border:0;border-radius:8px;background:#68d7ba;color:#102921;text-decoration:none;font:inherit;margin:0 8px 8px 0;cursor:pointer}input,textarea{padding:12px;background:#20313a;border:1px solid #3a515d;border-radius:7px;color:white;font:inherit;max-width:100%}textarea{width:100%;height:76px}pre{white-space:pre-wrap;font-size:16px;color:#87a4b4}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#18262e;border:1px solid #314650;border-radius:14px;padding:18px}#track{height:92px;position:relative;background:#0e1b23;border-radius:10px;overflow:hidden;touch-action:none}#tile{position:absolute;left:8px;top:14px;padding:16px;background:#68d7ba;border-radius:10px;color:#102921;cursor:grab;user-select:none;touch-action:none}output{color:#a0efcc}video{display:block;width:100%;max-height:250px;background:#080d11;border-radius:10px}#slider{width:100%;padding:0}label{display:block;margin-bottom:8px}
-</style><main><small>TSLA INFOTAINMENT LAB</small><h1>Your browser is connected.</h1>
-<p>Chromium inside the infotainment display.</p>
-<a href="https://example.com">Internet</a><button id="audio">Audio</button><span id="message"></span>
+@media(max-width:760px){main{margin:16px auto;padding:16px}.grid{grid-template-columns:1fr}h1{font-size:34px}}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #edf4f5;outline-offset:3px}
+</style><main><small>TSLA INFOTAINMENT LAB</small><h1>Browser test page</h1>
+<p>Test touch, mouse, keyboard, audio, video and graphics. All tests run locally.</p>
+<pre id="environment"></pre>
+<button id="network">Test local HTTP</button><output id="network-status" role="status">Not tested</output>
+<p><button id="audio">Play test tone</button><output id="message" role="status">Not tested</output></p>
 <div class="grid"><section class="card"><h2>Drag</h2><label for="slider">Slider · <output id="value">20</output></label><input id="slider" type="range" min="0" max="100" value="20"><div id="track"><div id="tile">Drag me</div></div><p><output id="drag">Moves: 0 · Releases: 0</output></p></section>
-<section class="card"><h2>Text input</h2><label for="text-input">Type and select text</label><textarea id="text-input">Infotainment Lab · test 🚘</textarea><p>Click here and try typing, or select the text with Ctrl+A.</p></section></div>
+<section class="card"><h2>Text input</h2><label for="text-input">Type and select text</label><textarea id="text-input">Infotainment Lab · test 🚘</textarea><p>Click here and try typing, or select the text with Ctrl+A.</p><output id="keyboard">Key events: 0</output></section></div>
 <section class="card" style="margin-top:18px"><h2>Video</h2><video id="video" controls muted playsinline></video><button id="video-start" style="margin-top:12px">Play demo</button><span id="video-status">Local generated video</span></section>
-<pre id="graphics"></pre><p style="margin-top:800px">End of scroll test</p></main>
+<pre id="graphics"></pre><p>Scroll down to check vertical scrolling.</p><p style="margin-top:800px">End of scroll test · <button id="top">Back to top</button></p></main>
 <script>
-const gl=document.createElement('canvas').getContext('webgl2'),ext=gl&&gl.getExtension('WEBGL_debug_renderer_info');
+const environment=document.querySelector('#environment');
+function showEnvironment(){environment.textContent=`Origin · ${location.origin}\nViewport · ${innerWidth} × ${innerHeight} · Pixel ratio ${devicePixelRatio}\nJavaScript · Running`;}
+showEnvironment();addEventListener('resize',showEnvironment);
+document.querySelector('#network').onclick=async()=>{const output=document.querySelector('#network-status');output.textContent='Checking…';try{const response=await fetch('./',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const body=await response.text();if(!body.includes('<h1>Browser test page</h1>'))throw new Error('Unexpected response');output.textContent=`OK · HTTP ${response.status}`;}catch(error){output.textContent=`Failed · ${error.message}`;}};
+document.querySelector('#top').onclick=()=>scrollTo({top:0,behavior:'smooth'});
+let keys=0;document.querySelector('#text-input').addEventListener('keydown',()=>{document.querySelector('#keyboard').textContent=`Key events: ${++keys}`;});
+const graphicsCanvas=document.createElement('canvas'),gl=graphicsCanvas.getContext('webgl2')||graphicsCanvas.getContext('webgl'),ext=gl&&gl.getExtension('WEBGL_debug_renderer_info');
 document.querySelector('#graphics').textContent=gl?'WebGL · '+(ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER)):'WebGL unavailable';
-document.querySelector('#audio').onclick=async()=>{const c=new AudioContext();await c.resume();const o=c.createOscillator(),g=c.createGain();g.gain.value=.08;o.frequency.value=440;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+2);document.querySelector('#message').textContent='Playing';o.onended=()=>{c.close();document.querySelector('#message').textContent='Complete';};};
+document.querySelector('#audio').onclick=async()=>{let c;try{c=new AudioContext();await c.resume();const o=c.createOscillator(),g=c.createGain();g.gain.value=.08;o.frequency.value=440;o.connect(g).connect(c.destination);o.start();o.stop(c.currentTime+2);document.querySelector('#message').textContent='Playing · 440 Hz';o.onended=()=>{c.close();document.querySelector('#message').textContent='Complete';};}catch(error){if(c)c.close();document.querySelector('#message').textContent=`Failed · ${error.message}`;}};
 const slider=document.querySelector('#slider');slider.oninput=()=>document.querySelector('#value').textContent=slider.value;
 const tile=document.querySelector('#tile'),track=document.querySelector('#track'),drag=document.querySelector('#drag');let start=0,base=0,moves=0,releases=0,down=false;
 tile.onpointerdown=e=>{down=true;start=e.clientX;base=tile.offsetLeft;tile.setPointerCapture(e.pointerId);};

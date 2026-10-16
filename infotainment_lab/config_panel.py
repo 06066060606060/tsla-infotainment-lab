@@ -22,6 +22,10 @@ class ConfigPanel(Panel):
 
     def __init__(self, window):
         super().__init__(window)
+        self.single_display = False
+        self.defaults = config_csv.profile_defaults(False)
+        self.profile_rows = {}
+        self.profile_removed = {}
         self.rows = []
         self.results = {}
         self.pending = None
@@ -87,26 +91,69 @@ class ConfigPanel(Panel):
         self.search.textChanged.connect(self.refresh)
         self.changed_only.toggled.connect(self.refresh)
         self.table.itemChanged.connect(self.edited)
-        try:
-            saved = json.loads(window.settings.value('config_rows_v2', '[]'))
-            if isinstance(saved, list):
-                self.rows = [row for row in saved if isinstance(row, dict) and {'name', 'value', 'original', 'applied'} <= row.keys()
-                             and row['original'] != config_csv.INVALID]
-        except (TypeError, ValueError):
-            pass
+        self.rows = self.saved_rows('config_rows_v2')
+        if any(row['name'] == 'VAPI_carType' and row['value'] == 'Model3' for row in self.rows):
+            # Older versions stored the edited Model 3 profile under the S/X key.
+            if not window.settings.contains('config_rows_model3_v1'):
+                window.settings.setValue('config_rows_model3_v1', json.dumps(self.rows))
+            self.rows = []
+            window.settings.setValue('config_rows_v2', '[]')
         self.rows = self.with_defaults(self.rows)
         self.refresh()
 
-    @staticmethod
-    def with_defaults(rows):
+    def saved_rows(self, key):
+        try:
+            saved = json.loads(self.window.settings.value(key, '[]'))
+            if isinstance(saved, list):
+                return [row for row in saved if isinstance(row, dict)
+                        and {'name', 'value', 'original', 'applied'} <= row.keys()
+                        and row['original'] != config_csv.INVALID]
+        except (TypeError, ValueError):
+            pass
+        return []
+
+    def save_rows(self):
+        key = 'config_rows_model3_v1' if self.single_display else 'config_rows_v2'
+        self.window.settings.setValue(key, json.dumps(self.rows))
+
+    def set_layout(self, single_display):
+        """Keep drafts and overrides separate when switching between S/X and Model 3 images."""
+        single_display = bool(single_display)
+        if single_display == self.single_display:
+            return
+        self.save_rows()
+        self.profile_rows[self.single_display] = self.rows
+        self.profile_removed[self.single_display] = self.removed
+        self.single_display = single_display
+        self.defaults = config_csv.profile_defaults(single_display)
+        key = 'config_rows_model3_v1' if single_display else 'config_rows_v2'
+        saved = self.profile_rows.get(single_display, self.saved_rows(key))
+        # A migrated legacy draft must also use the selected profile's defaults.
+        for row in saved:
+            if row['name'] in self.defaults:
+                old = row['original']
+                row['original'] = self.defaults[row['name']]
+                if row['value'] == old: row['value'] = row['original']
+                if row['applied'] == old: row['applied'] = row['original']
+        self.rows = self.with_defaults(saved)
+        self.results = {}
+        self.removed = self.profile_removed.get(single_display, set())
+        self.was_live = False
+        self.refresh()
+
+    def with_defaults(self, rows):
         """The default file's keys are always listed, ahead of any imported or added ones."""
         rest = {row['name']: row for row in rows}
-        first = [rest.pop(row['name'], row) for row in config_csv.default_rows(config_csv.profile_defaults())]
+        first = [rest.pop(row['name'], row) for row in config_csv.default_rows(self.defaults)]
         return first + list(rest.values())
 
     def apply(self):
         if self.pending is not None: return
         changed = {row['name']: row['value'] for row in self.rows if row['value'] != row['applied']}
+        refused = config_csv.unsupported_car(changed, self.single_display)
+        if refused:
+            self.window.show_message(refused, True)
+            return
         removed = set(self.removed)
         if not changed and not removed: return
         if not self.live:
@@ -114,15 +161,18 @@ class ConfigPanel(Panel):
             self.window.show_message('Saved. These values are written when the device starts.')
         elif not self.confirm_restart(changed):
             return
-        elif self.send('config-values', values={name: config_csv.coerce(value) for name, value in changed.items()},
+        elif self.send('config-values', values={name: self.coerce(name, value) for name, value in changed.items()},
                        explicit=self.explicit_names(changed), remove=sorted(removed)):
             self.pending = (changed, removed)
             self.apply_button.setEnabled(False)
 
+    def coerce(self, name, value):
+        return config_csv.coerce(value, name, self.single_display)
+
     def confirm_restart(self, changed):
         """Car-config values (the default file's keys) cannot be written live: the firmware restarts its UI
         for each one. They are saved and the device is restarted once instead."""
-        car = sorted(name for name in changed if name in config_csv.car_config(self.learned))
+        car = sorted(name for name in changed if name in config_csv.car_config(self.learned, self.single_display))
         if not car: return True
         answer = QMessageBox.question(self, 'Restart needed', f'{len(car)} car-config value(s) changed ({", ".join(car[:6])}{"…" if len(car) > 6 else ""}). '
             'They take effect when the device starts, so it will restart once now and the controls return to Park. Apply and restart?')
@@ -137,7 +187,7 @@ class ConfigPanel(Panel):
         for row in self.rows:
             if row['name'] in values: row['applied'] = values[row['name']]
         self.removed -= set(removed)
-        self.window.settings.setValue('config_rows_v2', json.dumps(self.rows))
+        self.save_rows()
         self.refresh()
 
     def acknowledge(self, success, data=None):
@@ -183,7 +233,7 @@ class ConfigPanel(Panel):
         self.show_report(invalid, duplicates)
 
     def show_report(self, invalid, duplicates):
-        defaults = config_csv.profile_defaults()
+        defaults = self.defaults
         differ = sum(row['name'] in defaults and row['value'] != row['original'] for row in self.rows)
         new = sum(row['applied'] is None for row in self.rows)
         unsent = sum((config_csv.prefix(row['name']) not in config_csv.SETTING_PREFIXES or config_csv.live(row['name'])) and row['name'] not in defaults for row in self.rows if row['applied'] == row['value'])
@@ -208,7 +258,7 @@ class ConfigPanel(Panel):
         default, and each queued row keeps what the firmware holds now as `applied`, so Apply writes the difference.
         """
         self.withheld = []
-        defaults = config_csv.profile_defaults()
+        defaults = self.defaults
         imported, invalid, duplicates = config_csv.parse(text, defaults, self.withheld)
         self.imported = len(imported)
         previous = {row['name']: row for row in self.rows}
@@ -244,7 +294,7 @@ class ConfigPanel(Panel):
 
     def refresh(self, *_):
         shown = self.visible()
-        defaults = config_csv.profile_defaults()
+        defaults = self.defaults
         self.table.blockSignals(True)
         self.table.setRowCount(len(shown))
         for index, (position, row) in enumerate(shown):
@@ -294,7 +344,7 @@ class ConfigPanel(Panel):
         if self.changed_only.isChecked(): QTimer.singleShot(0, self.refresh)
 
     def set_selected(self, value):
-        defaults = config_csv.profile_defaults() if value is None else {}
+        defaults = self.defaults if value is None else {}
         drop = set()
         for row in {index.row() for index in self.table.selectedIndexes()}:
             position = self.table.item(row, 0).data(Qt.UserRole)
@@ -307,7 +357,7 @@ class ConfigPanel(Panel):
         self.refresh()
 
     def drop_rows(self, positions):
-        defaults = config_csv.profile_defaults()
+        defaults = self.defaults
         for position in positions:  # default keys stay listed; removing one resets it
             if self.rows[position]['name'] in defaults: self.rows[position]['value'] = self.rows[position]['original']
         positions = {position for position in positions if self.rows[position]['name'] not in defaults}
@@ -316,7 +366,7 @@ class ConfigPanel(Panel):
 
     def revert(self):
         """Back to the app's default file: its keys at their defaults, every other key removed."""
-        defaults = config_csv.default_rows(config_csv.profile_defaults())
+        defaults = config_csv.default_rows(self.defaults)
         names = {row['name'] for row in defaults}
         by_name = {row['name']: row for row in self.rows}
         self.removed |= {row['name'] for row in self.rows if row['name'] not in names}
@@ -350,7 +400,7 @@ class ConfigPanel(Panel):
         self.live = session.get('phase') in ('running', 'degraded')
         if self.live and not self.was_live:
             # A new session starts without earlier overrides; write the applied ones again.
-            resend = {row['name']: config_csv.coerce(row['applied']) for row in self.rows if row['applied'] is not None and (row['applied'] != row['original'] or row.get('added'))}
+            resend = {row['name']: self.coerce(row['name'], row['applied']) for row in self.rows if row['applied'] is not None and (row['applied'] != row['original'] or row.get('added'))}
             if resend and self.send('config-values', values=resend, explicit=self.explicit_names(resend)): self.was_live = True
             elif not resend: self.was_live = True
         elif not self.live:
@@ -359,6 +409,9 @@ class ConfigPanel(Panel):
         self.report_restarts(session.get('config_values', {}).get('restarts', []))
         self.report_conflicts(session.get('config_values', {}).get('conflicts', []))
         seen = {}
+        for statuses in session.get('vehicle_services', {}).get('vehicle_profile', {}).values():
+            for name, status in statuses.items():
+                seen.setdefault(name, []).append(status)
         for statuses in session.get('config_values', {}).get('firmware', {}).values():
             for name, status in statuses.items():
                 seen.setdefault(name, []).append(status)
@@ -374,7 +427,7 @@ class ConfigPanel(Panel):
 
     def drop_rejected(self, names):
         """Keys no display knows are removed (also from the saved overrides) and listed in a popup."""
-        defaults = config_csv.profile_defaults()
+        defaults = self.defaults
         dead = [name for name in names if name not in defaults and any(row['name'] == name and row['applied'] is not None for row in self.rows)]
         if not dead: return
         positions = {position for position, row in enumerate(self.rows) if row['name'] in dead}
@@ -383,7 +436,7 @@ class ConfigPanel(Panel):
         self.refresh()
         if self.live: self.send('config-values', values={}, remove=sorted(dead))
         self.removed -= set(dead)
-        self.window.settings.setValue('config_rows_v2', json.dumps(self.rows))
+        self.save_rows()
         self.window.raise_alert(f'The firmware does not know {len(dead)} config key(s); they were removed from the list.', dead)
 
     def report_conflicts(self, names):
@@ -408,9 +461,16 @@ class ConfigPanel(Panel):
                                     f'{who} restarted its UI to apply settings; the firmware did not name the values.', names)
 
     def export_draft(self):
-        return {'rows': self.rows, 'search': self.search.text(), 'results': self.results}
+        return {'rows': self.rows, 'search': self.search.text(), 'results': self.results,
+                'single_display': self.single_display, 'profile_rows': self.profile_rows,
+                'removed': self.removed, 'profile_removed': self.profile_removed}
 
     def restore_draft(self, draft):
+        self.single_display = bool(draft.get('single_display'))
+        self.defaults = config_csv.profile_defaults(self.single_display)
+        self.profile_rows = draft.get('profile_rows', {})
+        self.profile_removed = draft.get('profile_removed', {})
+        self.removed = draft.get('removed', set())
         self.rows = draft.get('rows', [])
         self.results = draft.get('results', {})
         self.search.setText(draft.get('search', ''))

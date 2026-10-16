@@ -79,6 +79,10 @@ def media_browser_arguments(firmware: Path, state: Path, runtime: Path) -> list[
                  '--unsafely-treat-insecure-origin-as-secure=http://firmware-media.vn.teslamotors.com:9000',
                  f'--policy-config-dir={firmware / "etc/chromium/policies/chromium-app"}',
                  '--tesla-dbus-observe-navigation', '--user-agent-suffix= TeslaMusic/2026.26.6.1',
+                 # Use the firmware's chrome controls: --app bypasses its
+                 # ChromiumApp window title and native D-Bus registration.
+                 '--disable-status-bubble', '--disable-tab-strip',
+                 '--disable-toolbar', '--disable-location-bar',
                  'http://firmware-media.vn.teslamotors.com:9000']
     return argv
 
@@ -88,14 +92,14 @@ def supported_flags(usage: str) -> set[str]:
     return set(re.findall(r'^\s+-([A-Za-z0-9_]+)', usage, re.M))
 
 
-def media_webapp_arguments(firmware: Path, version: str, usage: str = '') -> tuple[list[str], list[str]]:
+def media_webapp_arguments(firmware: Path, version: str, usage: str = '', *, car_type='ModelX') -> tuple[list[str], list[str]]:
     """Server command line, keeping only flags this firmware's server defines.
 
     Server flags differ between firmware releases; an undefined flag makes the
     server print its usage and exit, leaving the native media card loading.
     Returns (argv, dropped flag names). An unreadable usage keeps every flag."""
     flags = [('bind', '127.0.0.1'), ('port', '9000'), ('secondary_port', '9007'),
-             ('tertiary_port', '9009'), ('platform_type', 'intel'), ('chassis_type', 'mx'),
+             ('tertiary_port', '9009'), ('platform_type', 'intel'), ('chassis_type', car_type),
              ('firmware_version', version), ('cache_exp_secs', '900'),
              ('oauth_reverse_proxy', 'https://activate.apple.com/'),
              ('qq_music_api_reverse_proxy', 'https://qplaycloud.y.qq.com/rpc_proxy/fcgi-bin/music_open_api.fcg'),

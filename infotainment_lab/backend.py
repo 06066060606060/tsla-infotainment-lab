@@ -29,18 +29,20 @@ from browser import MODES, browser_url, media_health
 from replay import replay_request, manual_takeover, controls_lock
 import config_csv
 import display_scale
+import firmware_files
+import debug_logs
 from vehicle_services import VehicleServices, CAPABILITIES
 from host_graphics import selection as graphics_selection
 
 DATA = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "tsla-infotainment-lab"
 UNIT = "tsla-infotainment-lab.service"
-PACKAGES = ["squashfs-tools", "squashfuse", "fuse3", "gcc", "binutils", "libx11-dev", "python3-dbus", "python3-gi",
+PACKAGES = ["squashfs-tools", "squashfuse", "fuse3", "fuse-overlayfs", "gcc", "binutils", "libx11-dev", "python3-dbus", "python3-gi",
             "dbus-x11", "xserver-xephyr", "x11-utils", "xdotool", "mesa-utils", "pulseaudio-utils",
             "alsa-utils", "libasound2-plugins", "libnss3", "libgbm1", "libatk-bridge2.0-0", "pkexec",
             "libxkbcommon-x11-0", "libxcb-cursor0", "libegl1", "libgl1", "libglx-mesa0", "python3-pil", "ffmpeg",
             "apparmor", "apparmor-utils", "gstreamer1.0-tools", "gstreamer1.0-alsa", "gstreamer1.0-plugins-base",
             "gstreamer1.0-plugins-good"]
-COMMANDS = ["unsquashfs", "squashfuse", "fusermount3", "gcc", "readelf", "Xephyr", "xdpyinfo",
+COMMANDS = ["unsquashfs", "squashfuse", "fusermount3", "fuse-overlayfs", "gcc", "readelf", "Xephyr", "xdpyinfo",
             "xdotool", "glxinfo", "dbus-run-session", "systemd-run", "pactl", "ffmpeg", "ffprobe",
             "apparmor_parser", "aa-exec"]
 
@@ -79,12 +81,12 @@ def probe() -> dict:
             "library": load_json(DATA / "library.json", []), "status": status()}
 
 
-def read_image_text(image: Path, member: str, required=True) -> str:
+def read_image_text(image: Path, member: str, required=True, max_length=200) -> str:
     result = run(["unsquashfs", "-cat", image, member], timeout=30, check=False)
     if result.returncode and required:
         raise ValueError(f"The image is missing {member}.")
     text = result.stdout.strip()
-    if len(text) > 200:
+    if len(text) > max_length:
         raise ValueError("Unexpected firmware metadata length.")
     return text if result.returncode == 0 else ""
 
@@ -103,11 +105,16 @@ def import_image(filename: str) -> dict:
         profile = profile_for(version, variant)
         kind = "firmware"
     else:
-        version = read_image_text(image, "VERSION")
+        # Map VERSION files include a release on the first line followed by
+        # build details. Keep firmware metadata limits separate from these.
+        metadata = read_image_text(image, "VERSION", max_length=16384)
+        version = metadata.splitlines()[0].strip() if metadata else ''
         engine = read_image_text(image, "NAVENGINE")
-        if not version.startswith("NA-") or engine != "TeslaMaps":
-            raise ValueError("This map format is not supported by the current map importer.")
-        variant, profile, kind = "North America", None, "map"
+        match = re.fullmatch(r'(NA|EU)-\d{4}(?:\.\d+){1,3}(?:-[A-Za-z0-9]+)?', version)
+        if not match or engine != "TeslaMaps":
+            raise ValueError("Use a North America (NA-) or Europe (EU-) TeslaMaps SquashFS image.")
+        variant = {'NA': 'North America', 'EU': 'Europe'}[match.group(1)]
+        profile, kind = None, "map"
     digest = sha256_file(image)
     item = {"id": digest[:16], "sha256": digest, "path": str(image), "filename": image.name,
             "bytes": image.stat().st_size, "mtime_ns": image.stat().st_mtime_ns,
@@ -166,6 +173,47 @@ def mounted_image(item: dict) -> Path:
             raise RuntimeError("The firmware mount directory is not empty. No files were changed.")
         run(["squashfuse", "-o", "ro,nosuid,nodev", item["path"], mount], timeout=30)
     return mount
+
+
+def firmware_replacements(identifier, operation='list', target=None, filename=None, vm_directory=None):
+    item = library_item(identifier)
+    if item['kind'] != 'firmware':
+        raise ValueError('Select a firmware image before managing replacements.')
+    with firmware_files.lock(DATA):
+        upper = firmware_files.tree(DATA, identifier)
+        if operation != 'list':
+            phase = status().get('phase')
+            config = session_config(require_active=False)
+            if phase in ('starting', 'running', 'degraded', 'stopping') and config.get('firmware_id') == identifier:
+                raise RuntimeError('Stop this firmware session before editing its replacements.')
+            view = DATA / 'views' / identifier
+            if not release_mount(view):
+                raise RuntimeError('The previous replacement view could not be released.')
+            from qemu_runtime import read_state, process_identity
+            directory = Path(vm_directory) if vm_directory else DATA / 'virtual-desktop'
+            state = read_state(directory)
+            identity = state.get('process', {})
+            if identity and process_identity(identity.get('pid')) == identity:
+                launched = state.get('files', {}).get('firmware')
+                if launched and Path(launched).resolve() == Path(item['path']).resolve():
+                    raise RuntimeError('Stop this firmware VM before editing its replacements.')
+        if operation == 'put':
+            values = firmware_files.put(DATA, identifier, mounted_image(item), target, filename)
+        elif operation == 'remove':
+            values = firmware_files.remove(DATA, identifier, target)
+        elif operation == 'list':
+            values = firmware_files.entries(upper)
+        else:
+            raise ValueError('Unknown replacement operation.')
+        return {'id': identifier, 'files': values}
+
+
+def firmware_view(item, root):
+    upper = firmware_files.tree(DATA, item['id'])
+    mount = firmware_files.private_directory(DATA / 'views') / safe_id(item['id'])
+    if not release_mount(mount):
+        raise RuntimeError('The previous replacement view could not be released.')
+    return firmware_files.mount_view(root, upper, mount, run)
 
 
 def verify_builds(root: Path, profile: dict):
@@ -227,6 +275,11 @@ def stage_runtime(destination: Path):
 
 
 def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
+    with firmware_files.lock(DATA):
+        return _start(identifier, map_id, browser, cluster)
+
+
+def _start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     if os.getuid() == 0:
         raise RuntimeError("Run the application as a normal desktop user, not root.")
     environment = probe()
@@ -254,6 +307,7 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
         raise ValueError("This firmware has been identified but has no tested launch profile yet.")
     root = mounted_image(item)
     verify_builds(root, profile)
+    root = firmware_view(item, root)
     if profile.get("single_display"):
         cluster = False
     if profile.get("experimental") and browser:
@@ -273,7 +327,7 @@ def start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     # application's temporary extraction directory must not own the session.
     runtime = DATA / "engine"
     stage_runtime(runtime)
-    config = {"firmware": str(root), "single_display": bool(profile.get("single_display")), "firmware_version": item["version"], "firmware_id": identifier, "map_id": map_id, "state": str(session), "profile": profile["id"],
+    config = {"firmware": str(root), "managed_mounts": True, "single_display": bool(profile.get("single_display")), "firmware_version": item["version"], "firmware_id": identifier, "map_id": map_id, "state": str(session), "profile": profile["id"],
               "browser": browser, "cluster": cluster, "maps": maps,
               "display": os.environ.get("DISPLAY", ":0"), "pulse": os.environ.get("PULSE_SERVER", ""),
               "wsl": "microsoft" in platform.release().lower(),
@@ -434,6 +488,15 @@ def can_call(payload):
 
     if not isinstance(payload, dict):
         raise ValueError('CAN requests must be an object.')
+    if payload.get('action') == 'os-trace':
+        import native_traffic
+        return dict(native_traffic.snapshot(can_service_state()), observation=True)
+    if payload.get('action') == 'os-dbc':
+        import native_traffic
+        return dict(native_traffic.set_dbc(can_service_state(), payload.get('path', '')), os_dbc=True)
+    if payload.get('action') == 'os-injection':
+        import native_injection
+        return native_injection.change_config(can_service_state(), payload)
     return can_service.request(can_service_state(), payload)
 
 
@@ -569,8 +632,9 @@ def stop():
         systemctl("stop", UNIT, check=True)
     atomic_json(DATA / "session/status.json", {"phase": "stopped", "components": {}})
     # Unmount only this application's own FUSE mounts, after its clients stop.
-    for mount in (DATA / "mounts").glob("*"):
-        release_mount(mount)
+    for directory in ('views', 'mounts'):
+        for mount in (DATA / directory).glob('*'):
+            release_mount(mount)
     return status()
 
 
@@ -582,11 +646,11 @@ def factory_reset():
     """
     stop()  # also releases the image mounts, lazily when something still holds them
     # Never delete through a mount: rmtree would walk into the firmware image.
-    held = [m.name for m in (DATA / "mounts").glob("*") if not release_mount(m)]
+    held = [str(m) for directory in ('views', 'mounts') for m in (DATA / directory).glob('*') if not release_mount(m)]
     if held:
         raise RuntimeError("The firmware image could not be unmounted (fusermount3 refused it), so nothing was deleted. "
-                           f"Run `fusermount3 -uz {DATA / 'mounts' / held[0]}` or restart WSL, then try Full reset again.")
-    for name in ("session", "engine", "mounts"):
+                           f"Run `fusermount3 -uz {held[0]}` or restart WSL, then try Full reset again.")
+    for name in ("session", "engine", "views", "mounts", "replacements"):
         target = DATA / name
         if target.is_symlink():
             target.unlink()
@@ -642,8 +706,10 @@ def setup(uid: int):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "config-values", "browser", "steering", "can", "can-start", "can-status", "can-setup", "factory-reset", "qemu-check", "ssh-key", "qemu-start", "qemu-status", "qemu-stop"))
+    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "debug", "firmware-files", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "config-values", "browser", "steering", "can", "can-start", "can-status", "can-setup", "factory-reset", "qemu-check", "ssh-key", "qemu-start", "qemu-status", "qemu-stop"))
     parser.add_argument('--button')
+    parser.add_argument('--target')
+    parser.add_argument('--replacement-operation', choices=('list', 'put', 'remove'), default='list')
     parser.add_argument('--can-backend', choices=('auto', 'socketcan', 'software'), default='auto')
     parser.add_argument('--bridge-port', type=int, default=20200)
     parser.add_argument('--create-interfaces', action='store_true')
@@ -666,7 +732,9 @@ def main():
     try:
         if args.action == 'ssh-key' and args.engine != 'qemu':
             raise ValueError('The SSH console needs the virtual-hardware (QEMU) engine.')
-        if args.engine == 'qemu' and args.action not in ('import', 'factory-reset', 'qemu-check', 'qemu-start', 'qemu-status', 'qemu-stop'):
+        if args.action == 'firmware-files':
+            result = firmware_replacements(args.id or '', args.replacement_operation, args.target, args.path, args.vm_directory)
+        elif args.engine == 'qemu' and args.action not in ('import', 'factory-reset', 'qemu-check', 'qemu-start', 'qemu-status', 'qemu-stop'):
             sys.path.insert(0, str(PACKAGE.parent))
             from infotainment_lab.virtual_control import dispatch
             result = dispatch(args, sys.modules[__name__])
@@ -693,6 +761,7 @@ def main():
         elif args.action == "start": result = start(args.id or "", args.map_id, not args.no_browser, not args.no_cluster)
         elif args.action == "stop": result = stop()
         elif args.action == "status": result = status()
+        elif args.action == 'debug': result = debug_logs.snapshot(DATA / 'session', UNIT)
         elif args.action == "factory-reset": result = factory_reset()
         elif args.action == "setup": result = setup(args.uid)
         elif args.action == 'restart': result = restart()
@@ -703,7 +772,11 @@ def main():
         elif args.action == 'config-values': result = set_config_values(json.loads(args.payload))
         elif args.action == 'browser': result = open_browser(args.mode, args.url)
         elif args.action == 'steering': result = steering_button(args.button)
-        elif args.action == 'can': result = can_call(json.loads(args.payload))
+        elif args.action == 'can':
+            payload = json.loads(args.payload)
+            if args.path and isinstance(payload, dict) and payload.get('action') == 'os-dbc':
+                payload['path'] = args.path
+            result = can_call(payload)
         elif args.action == 'can-start':
             result = can_start(args.can_backend, args.create_interfaces, args.bridge_port)
         elif args.action == 'can-status': result = can_status()

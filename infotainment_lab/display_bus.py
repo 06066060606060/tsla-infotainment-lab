@@ -13,11 +13,13 @@ def connect(address):
     return dbus.bus.BusConnection(address, mainloop=DBusGMainLoop())
 
 
-def call_many(interface, method, arguments, timeout=.3):
+def call_many(interface, method, arguments, timeout=1.5):
     """Return replies keyed by field; a transport failure is never unsupported.
 
     A batch has at most 32 outstanding calls. Late callbacks only touch their
     own closed batch, and the next iteration can retry a failed operation.
+    Cold firmware/UI rendering can take more than 300 ms to answer a batch;
+    the larger deadline still returns immediately when all replies arrive.
     Call from the owning process thread, outside an existing GLib main loop.
     """
     from gi.repository import GLib

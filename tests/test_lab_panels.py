@@ -54,6 +54,35 @@ def test_light_mode_draft_survives_rebuild_and_native_update(window):
     assert panel.field_value('exterior_light_mode') == 'Parking'
 
 
+def test_park_assist_controls_send_explicit_simulation_and_preserve_distance_drafts(window):
+    panel = window.services_panel
+    assert 'Park Assist' in [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+    panel.live = True
+    panel.widgets['park_assist_simulation'].setChecked(True)
+    panel.widgets['park_front_left_cm'].setValue(83.5)
+    panel.apply()
+    sent = payloads(window, 'vehicle-services')[-1]
+    assert sent['park_assist_simulation'] is True and sent['park_front_left_cm'] == 83.5
+    draft = panel.export_draft()
+    window.rebuild()
+    panel = window.services_panel
+    panel.restore_draft(draft)
+    assert panel.field_value('park_assist_simulation') is True
+    assert panel.field_value('park_front_left_cm') == 83.5
+
+
+def test_self_driving_ui_switch_is_explicit_and_survives_panel_rebuild(window):
+    panel = window.services_panel
+    assert 'Self-Driving simulation' in [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+    assert panel.field_value('fsd_ui_simulation') is False
+    panel.live = True
+    panel.widgets['fsd_ui_simulation'].setChecked(True)
+    panel.apply()
+    assert payloads(window, 'vehicle-services')[-1]['fsd_ui_simulation'] is True
+    window.rebuild()
+    assert window.services_panel.field_value('fsd_ui_simulation') is True
+
+
 def test_light_controls_keep_a_consistent_draft_when_the_user_changes_modes(window):
     panel = window.services_panel
     mode = panel.widgets['exterior_light_mode']
@@ -272,54 +301,117 @@ def test_stale_replay_poll_does_not_replace_a_manual_edit_while_it_is_debounced(
     assert payloads(window, 'controls')[-1]['steering_deg'] == 90
 
 
-def test_can_panel_sends_a_frame_through_the_gateway(window):
+def observed_frame(identifier=0x321, direction='TX', bus='gateway'):
+    return {'id': identifier, 'id_hex': f'0x{identifier:03X}', 'timestamp_ms': 120,
+            'direction': direction, 'bus': bus, 'transport': 'Ethernet', 'data': '12 34',
+            'length': 2, 'extended': None, 'rtr': None, 'message': 'Example',
+            'signals': [{'signal': 'example', 'value': 'ACTIVE', 'unit': ''}]}
+
+
+def test_os_observation_is_separate_from_lab_frames_and_does_not_start_transmission(window):
     panel = window.can_panel
-    panel.identifier.setText('0x2E5')
-    panel.payload.setText('21 04')
-    panel.send_frame()
-    payload = payloads(window, 'can')[-1]
-    assert payload['action'] == 'send' and payload['origin'] == 'ethernet'
-    assert payload['frame'] == {'channel': 'veh', 'id': '0x2E5', 'data': '21 04'}
+    panel.observe()
+    assert payloads(window, 'can')[-1] == {'action': 'os-trace'}
+    assert not any(args[0] == 'can-start' for args in window.calls)
+    assert not hasattr(panel, 'lab_tools')
+    assert not hasattr(panel, 'secret')
+    panel.received('can', {'ok': True, 'data': {'observation': True, 'state': 'observing',
+        'frames': [observed_frame(), observed_frame(direction='TX request')]}})
+    assert panel.raw_observation.rowCount() == 1
+    assert panel.raw_observation.item(0, 4).text() == '—'  # no invented CAN flags
+    assert panel.decoded_observation.item(0, 1).text() == 'ACTIVE'
+    panel.observation_bus.setCurrentIndex(panel.observation_bus.findData('party'))
+    assert panel.raw_observation.rowCount() == 0
+    assert panel.decoded_observation.rowCount() == 0
 
 
-def test_can_panel_requires_an_identifier(window):
-    window.can_panel.send_frame()
-    assert payloads(window, 'can') == []
-
-
-def test_can_panel_answers_a_challenge_with_a_derived_response(window):
-    import hashlib
-    import hmac
-
+def test_os_view_pause_filter_and_csv_keep_origin_and_decode_values(window, app):
     panel = window.can_panel
-    panel.secret.setText('test-secret')
-    panel.unlock()
-    assert payloads(window, 'can')[-1] == {'action': 'challenge'}
-    panel.received('can', {'ok': True, 'data': {'challenge': '00112233445566aa'}})
+    panel.receive_observation({'frames': [observed_frame(), observed_frame(0x322)]})
+    panel.observation_filter.setText('0x321')
+    assert panel.raw_observation.rowCount() == 1
+    panel.pause_observation.setChecked(True)
+    panel.receive_observation({'frames': []})
+    assert panel.raw_observation.rowCount() == 1
+    panel.copy_observation(False)
+    text = app.clipboard().text()
+    assert 'timestamp_ms;id;extended;rtr;dlc;data' in text
+    assert '120;0x321;;;2;12 34;gateway;TX;Ethernet' in text
+    panel.copy_observation(True)
+    assert '120;0x321;Example;example;ACTIVE;;gateway;TX' in app.clipboard().text()
+
+
+def test_injection_editor_freezes_source_and_queues_disabled_rule_with_only_selected_edits(window):
+    panel = window.can_panel
+    panel.receive_observation({'frames': [observed_frame()]})
+    editor = panel.injection
+    editor.use_selected()
+    editor.values.item(0, 2).setText('INACTIVE')
+    panel.receive_observation({'frames': [observed_frame(0x322)]})
+    assert editor.draft['id'] == 0x321
+    assert editor.values.item(0, 2).text() == 'INACTIVE'
+    editor.save()
     sent = payloads(window, 'can')[-1]
-    assert sent['action'] == 'unlock'
-    assert sent['response'] == hmac.new(b'test-secret', bytes.fromhex('00112233445566aa'),
-                                        hashlib.sha256).hexdigest()[:32]
+    assert sent['action'] == 'os-injection' and sent['operation'] == 'save'
+    assert sent['identifier'] == 0x321 and sent['edits'] == {'example': 'INACTIVE'}
+    assert 'enabled' not in sent
 
 
-def test_can_panel_reports_a_refusal_and_a_stopped_service(window):
+def test_injection_rule_activation_is_read_back_and_stop_all_is_available(window):
+    editor = window.can_panel.injection
+    rule = {'key': 'r1', 'name': 'Example echo', 'identifier': 0x321, 'enabled': False,
+            'edits': {'example': 1}, 'echoes': 0}
+    editor.render({'rules': [rule]})
+    editor.operate('enable')
+    assert payloads(window, 'can')[-1] == {'action': 'os-injection', 'operation': 'enable', 'key': 'r1'}
+    assert editor.table.item(0, 2).text() == 'Disabled'
+    window.can_panel.received('can', {'ok': True, 'data': {'injection': True,
+        'rules': [dict(rule, enabled=True)], 'error': ''}})
+    assert editor.table.item(0, 2).text() == 'Enabled'
+    editor.operate('stop')
+    assert payloads(window, 'can')[-1]['operation'] == 'stop'
+
+
+def test_injection_queue_survives_busy_poll_and_errors_do_not_claim_enabled(window, monkeypatch):
+    editor = window.can_panel.injection
+    monkeypatch.setattr(window.bridge, 'call', lambda *args: False)
+    editor.operate('stop')
+    assert editor.queue and not editor.inflight
+    sent = []
+    monkeypatch.setattr(window.bridge, 'call', lambda *args: sent.append(args) or True)
+    editor.flush()
+    assert not editor.queue and editor.inflight
+    window.can_panel.received('can', {'ok': False, 'error': 'Observer stopped'})
+    assert not editor.inflight and 'Observer stopped' in editor.status.text()
+    editor.retry.stop()
+
+
+def test_display_pause_still_polls_injection_state_and_device_stop_disables_rules(window):
     panel = window.can_panel
-    panel.received('can', {'ok': True, 'data': {'allowed': False, 'route': 'eth-to-veh',
-                                                'reason': 'the gateway session is locked'}})
-    assert 'locked' in panel.result.text()
-    panel.received('can-status', {'ok': True, 'data': {'service': 'stopped'}})
-    assert 'stopped' in panel.state.text()
+    panel.receive_observation({'frames': [observed_frame()]})
+    panel.pause_observation.setChecked(True)
+    panel.observe()
+    assert payloads(window, 'can')[-1] == {'action': 'os-trace'}
+    rule = {'key': 'r1', 'name': 'Echo', 'identifier': 0x321, 'enabled': True, 'edits': {'example': 1}}
+    panel.receive_observation({'state': 'observing', 'frames': [], 'injection': {'rules': [rule]}})
+    assert panel.raw_observation.rowCount() == 1
+    assert panel.injection.table.item(0, 2).text() == 'Enabled'
+    panel.receive_observation({'state': 'stopped', 'frames': []})
+    assert panel.injection.table.item(0, 2).text() == 'Disabled'
 
 
-def test_can_panel_renders_a_decoded_trace(window):
+def test_selected_dbc_waits_for_an_inflight_poll_instead_of_losing_the_choice(window, monkeypatch):
     panel = window.can_panel
-    panel.received('can', {'ok': True, 'now': 5, 'data': {'frames': [
-        {'channel': 'veh', 'id': 0x118, 'id_hex': '118', 'data': '21 04 00 00 00 00 00 00',
-         'name': 'LAB_driveState', 'signals': {'gear': 'D', 'speed_kph': 80.0}, 'timestamp': 4}],
-        'now': 5}})
-    assert 'LAB_driveState' in panel.frames.text()
-    assert 'gear=D' in panel.trace.text()
-    assert panel.since == 5
+    panel.pending_observation_dbc = '/local/example.dbc'
+    monkeypatch.setattr(window.bridge, 'call', lambda *args: False)
+    panel.observe()
+    assert panel.pending_observation_dbc == '/local/example.dbc'
+    sent = []
+    monkeypatch.setattr(window.bridge, 'call', lambda *args: sent.append(args) or True)
+    panel.observe()
+    assert panel.pending_observation_dbc is None
+    assert sent[0][-2:] == ('--path', '/local/example.dbc')
+    assert json.loads(sent[0][2]) == {'action': 'os-dbc'}
 
 
 def cfg_row(panel, name):
@@ -352,6 +444,77 @@ def test_config_panel_lists_the_default_keys_and_import_compares_against_them(wi
     panel.set_selected('true')
     assert cfg_row(panel, 'APTRIAL_force')['value'] == 'true'
     window.show_page(8)
+
+
+def test_config_layout_switch_keeps_vehicle_edits_separate(window):
+    panel = window.config_panel
+    panel.load('Name,Value\nVAPI_carType,ModelS2\nAPP_sx,1\n')
+    panel.set_layout(True)
+    assert cfg_row(panel, 'VAPI_carType')['value'] == 'Model3'
+    assert not any(row['name'] == 'APP_sx' for row in panel.rows)
+    panel.load('Name,Value\nVAPI_trim,7\nAPP_m3,2\n')
+    panel.set_layout(False)
+    assert cfg_row(panel, 'VAPI_carType')['value'] == 'ModelS2'
+    assert cfg_row(panel, 'APP_sx')['value'] == '1'
+    panel.set_layout(True)
+    assert cfg_row(panel, 'VAPI_trim')['value'] == '7'
+    assert cfg_row(panel, 'APP_m3')['value'] == '2'
+
+
+def test_pending_removals_survive_layout_switch_and_panel_rebuild(window):
+    panel = window.config_panel
+    panel.load('Name,Value\nAPP_sx,1\n')
+    panel.commit({'APP_sx': '1'})
+    panel.load('Name,Value\n')
+    assert panel.removed == {'APP_sx'}
+    panel.set_layout(True)
+    assert not panel.removed
+    panel.set_layout(False)
+    window.rebuild()
+    assert window.config_panel.removed == {'APP_sx'}
+
+
+def test_config_rebuild_keeps_model3_draft(window):
+    panel = window.config_panel
+    panel.set_layout(True)
+    panel.load('Name,Value\nVAPI_trim,7\nAPP_m3,2\n')
+    draft = panel.export_draft()
+    restored = config_panel.ConfigPanel(window)
+    restored.restore_draft(draft)
+    assert restored.single_display and restored.defaults['VAPI_carType'] == 'Model3'
+    assert cfg_row(restored, 'VAPI_trim')['value'] == '7'
+    restored.close()
+
+
+def test_config_refuses_manual_sx_identity_on_model3_even_when_offline(window):
+    panel = window.config_panel
+    panel.set_layout(True)
+    cfg_row(panel, 'VAPI_carType')['value'] = 'ModelX'
+    panel.apply()
+    assert cfg_row(panel, 'VAPI_carType')['applied'] == 'Model3'
+    assert 'Model S/X' in window.banner.text()
+
+
+def test_legacy_model3_saved_config_migrates_without_losing_edits(window):
+    legacy = [{'name': 'VAPI_carType', 'value': 'Model3', 'original': 'Model3', 'applied': 'Model3'},
+              {'name': 'VAPI_trim', 'value': '7', 'original': '23', 'applied': '7', 'explicit': True}]
+    window.settings.setValue('config_rows_v2', json.dumps(legacy))
+    panel = config_panel.ConfigPanel(window)
+    assert cfg_row(panel, 'VAPI_carType')['value'] == 'ModelX'
+    panel.set_layout(True)
+    assert cfg_row(panel, 'VAPI_carType')['value'] == 'Model3'
+    assert cfg_row(panel, 'VAPI_trim')['value'] == '7' and cfg_row(panel, 'VAPI_trim')['explicit']
+    assert window.settings.contains('config_rows_model3_v1')
+    panel.close()
+
+
+def test_vehicle_profile_readback_is_shown_in_the_config_firmware_column(window):
+    panel = window.config_panel
+    panel.set_layout(True)
+    panel.update_status({'phase': 'starting', 'vehicle_services': {'vehicle_profile': {
+        'com.tesla.CenterDisplay': {'VAPI_chassisType': 'accepted', 'VAPI_trim': 'mismatch'}}}})
+    assert panel.status_text('VAPI_chassisType') == '✓ Applied'
+    assert panel.status_text('VAPI_trim') == 'Mismatch'
 
 
 def test_config_panel_remove_selected_resets_a_default_key_and_drops_others(window):

@@ -1,5 +1,23 @@
 # Local vehicle services and display synchronization
 
+## Self-Driving interface simulation
+
+Controls > Self-Driving simulation contains the default-off
+`fsd_ui_simulation` switch. On the configured Model 3 ICE image, it makes the
+native Start button available and handles Start/Stop as local display-state
+transitions. A click selects ActiveFsd; Stop returns to Available. Speed, gear
+and steering remain under manual/replay control. This provides no autonomous
+driving controller or perception.
+
+The native FSD menu and Start-from-Park settings must first be enabled and the
+device restarted to prepare the panel. After that, the simulation switch takes
+effect immediately. Disabling it restores the previous AP value/validity;
+restarting always begins disengaged. The adapter fails closed when its required
+native methods or enum names are absent. See [the configuration guide](vehicle-config.md#optional-self-driving-ui-simulation)
+for the exact opt-in and [validation record](VALIDATION.md) for live evidence.
+
+## Shared model
+
 The Services page supplies a shared local vehicle model to the center and
 instrument displays. Both displays receive the same battery, climate and
 driving state. Native climate and audio controls feed changes back into this
@@ -19,7 +37,7 @@ Car-config values from a vehicle dump are handled on the separate
 | Energy | Battery percentage, charging state (session flags, `GTW_chargeState` `Charging`/`Disconnected`, charge-port cover and latch), charging power and charge limit | Charging does not increment the battery automatically. `GTW_chargeState` `Charging` is not yet observed on a running UI. |
 | Audio | Volume and mute synchronize across the two displays and firmware audio streams | Only audio streams whose executable belongs to the mounted firmware are changed. |
 | Navigation | Supplied GPS, heading, destination label, remaining distance and time; street base map observed after valid replay GPS | Offline NA imagery, route computation and live traffic remain unverified. |
-| Tire pressures | Four editable pressure values in the local model | Native TPMS units have not been verified, so these values are not injected into native TPMS fields. |
+| Tire pressures | Four editable simulated pressures, delivered to native Conti/Tesla TPMS display fields in bar | The firmware formats Bar/Psi according to the user's preference. Physical sensors, calibration and warning logic are not emulated. |
 | Dashcam | Fresh GPS/heading follow the decoded video frame, alongside the six driving controls | Recorded driver-assistance and acceleration values remain metadata. |
 
 Physical ECU/CAN services, drivetrain controllers, cellular provisioning, Tesla
@@ -70,7 +88,8 @@ the touchscreen procedure in
 
 The Service card is the firmware's own web panel. QtCar embeds a Chromium
 window titled `ChromiumOdin` that loads `http://localhost:8000`, served by the
-firmware backend `/opt/odin/service-ui` (the vehicle's `chromium-odin` and
+firmware backend `/opt/diag/service-ui` on newer ICE images, or
+`/opt/odin/service-ui` on older images (the vehicle's `chromium-odin` and
 `service-ui` services). When Browser support is enabled and port 8000 is free,
 the lab starts both from the mounted image with the vehicle's window, D-Bus and
 policy settings. The backend aborts unless it can bind the center's
@@ -84,7 +103,12 @@ data-value server, `QtCarDvServer`, which the lab starts under its firmware
 peer name with a private `/tmp/dbus_dvaccess` directory. The backend keeps its own token,
 factory-gated and identity checks; the lab supplies no credentials and no
 CAN-over-Ethernet link, so functions that need them report their own
-unavailable state.
+unavailable state. Newer backends also read `/var/etc/jcanproduct`, normally
+created during vehicle boot. The lab writes the selected profile's generic
+model name into `session/service-ui-home/jcanproduct`; a backend-only preload
+redirects read-only opens of that one path. It neither creates host `/var/etc`
+files nor changes credentials. Odin task assets remain under `opt/odin` even
+when the web backend moved to `opt/diag`.
 
 The vehicle's Odin diagnostic engine is replaced by a stand-in,
 `runtime/odin-engine.py`. The backend reaches the engine two ways: D-Bus calls to
@@ -202,3 +226,35 @@ Absent fields are queried once per display process, then cached until that
 display restarts. This avoids repeatedly adding unsupported-field messages to
 the firmware logs.
 
+
+## Model 3 expanded parked visualization
+
+On native single-display Model 3 sessions, drag the boundary between the vehicle
+and map right to expand the 3D view. Drag left to restore the regular map layout.
+`GUI_expandFsdVisualizationEnable` must be enabled. The desktop input adapter
+advertises the layout capability and allows the parked layout using the native
+`VehicleUtils::isCarParked` query; it does not change the simulated gear or
+parking-brake values. Track mode remains excluded. Other sessions keep the
+firmware's own layout decision. This is a desktop visualization feature.
+
+## Simulated Park Assist
+
+Controls > Vehicle services > Park Assist provides an opt-in ultrasonic simulation
+with five front and five rear distances, each from 0 to 250 cm. Values retain
+one decimal place. The native display converts them to its selected distance
+units. The failure switch changes the native status to TemporaryFailure;
+turning simulation off sets Disabled. Both cases clear obstacle distances to
+the native negative/unavailable value and mark the simulated sensor interface
+inactive. Re-enabling a healthy simulation restores the saved distances.
+
+For the tested Model 3 ICE image, Vehicle config must have
+`FEATURE_parkAssistEnabled=true`, `VAPI_parkAssist=Valeo` or `Tesla`, and
+`GUI_useVisionParkAssist=false`. Apply configuration changes and restart the
+device if the panel requests it. `Valeo5` is not a valid named enum on this build.
+Vision mode requires perception data that this ultrasonic simulation does not
+produce. The native display still decides when Park Assist is visible according
+to gear and distance; no GUI activation flag is forced by the simulator.
+
+The worker publishes local processed PARK and PARK_USS distances, status,
+service and sensor-interface health with normal per-field readback. It does
+not generate physical CAN traffic, camera perception or steering commands.

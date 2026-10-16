@@ -13,6 +13,45 @@ if os.name != 'nt':
     import supervisor
 
 
+def test_os_trace_remains_read_only_without_starting_the_emulated_gateway(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    result = backend.can_call({'action': 'os-trace'})
+    assert result['observation'] and result['state'] == 'stopped' and not result['frames']
+    assert not (tmp_path / 'session/can-gateway.sock').exists()
+
+
+@pytest.mark.parametrize(('region', 'variant'), [('EU', 'Europe'), ('NA', 'North America')])
+def test_import_map_accepts_multiline_version_and_keeps_release_only(tmp_path, monkeypatch, region, variant):
+    monkeypatch.setattr(backend, 'DATA', tmp_path / 'library')
+    monkeypatch.setattr(backend.shutil, 'which', lambda name: '/usr/bin/' + name)
+    image = tmp_path / 'local-map.ssq'
+    image.write_bytes(b'hsqs' + b'synthetic image for metadata testing')
+    header = f'{region}-2026.8-12345'
+    metadata = {'VERSION': header + '\n' + 'synthetic build details\n' * 30, 'NAVENGINE': 'TeslaMaps\n'}
+    monkeypatch.setattr(backend, 'run', lambda args, **kw: SimpleNamespace(
+        returncode=0 if args[-1] in metadata else 1, stdout=metadata.get(args[-1], '')))
+    item = backend.import_image(str(image))
+    assert item['kind'] == 'map' and item['supported'] and item['profile'] is None
+    assert item['version'] == header and item['variant'] == variant
+    assert backend.library_item(item['id']) == item
+    assert image.read_bytes().startswith(b'hsqs')  # Import does not rewrite the source.
+
+
+@pytest.mark.parametrize(('version', 'engine'), [('AP-2026.8', 'TeslaMaps'), ('EU-invalid', 'TeslaMaps'),
+    ('EU-2026.8', 'OtherEngine'), ('', 'TeslaMaps'), ('EU-2026.8\n' + 'x' * 16384, 'TeslaMaps')])
+def test_import_map_rejects_unknown_format_or_oversized_metadata(tmp_path, monkeypatch, version, engine):
+    monkeypatch.setattr(backend, 'DATA', tmp_path / 'library')
+    monkeypatch.setattr(backend.shutil, 'which', lambda name: '/usr/bin/' + name)
+    image = tmp_path / 'local-map.ssq'
+    image.write_bytes(b'hsqs' + b'synthetic image')
+    metadata = {'VERSION': version, 'NAVENGINE': engine}
+    monkeypatch.setattr(backend, 'run', lambda args, **kw: SimpleNamespace(
+        returncode=0 if args[-1] in metadata else 1, stdout=metadata.get(args[-1], '')))
+    with pytest.raises(ValueError):
+        backend.import_image(str(image))
+    assert not (backend.DATA / 'library.json').exists()
+
+
 def test_staged_session_imports_without_source_checkout(tmp_path):
     import subprocess
 
@@ -53,6 +92,34 @@ def test_single_display_preflight_does_not_require_cluster(tmp_path):
     executable.write_bytes(b'\x7fELF\x02\x01' + bytes(12) + b'\xb7\x00')
     with pytest.raises(ValueError, match='architecture'):
         backend.verify_builds(tmp_path, profile)
+
+
+def test_supervisor_prepares_firmware_and_maps_in_its_own_mount_namespace(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    firmware = {'id': 'a' * 16, 'kind': 'firmware', 'version': '2026.26.6.5', 'variant': 'ice_mrb'}
+    maps = {'id': 'b' * 16, 'kind': 'map'}
+    monkeypatch.setattr(backend, 'library_item', lambda identifier: firmware if identifier == firmware['id'] else maps)
+    mounts = []
+    def mount(item):
+        mounts.append(item['id'])
+        return tmp_path / 'service-mounts' / item['id']
+    monkeypatch.setattr(backend, 'mounted_image', mount)
+    checked = []
+    monkeypatch.setattr(backend, 'verify_builds', lambda root, profile: checked.append(root))
+    monkeypatch.setattr(backend, 'firmware_view', lambda item, root: tmp_path / 'service-view')
+    config = {'managed_mounts': True, 'firmware_id': firmware['id'], 'map_id': maps['id'], 'firmware': '/invisible-desktop-mount'}
+    supervisor.prepare_firmware_mounts(config)
+    assert mounts == [firmware['id'], maps['id']]
+    assert checked == [tmp_path / 'service-mounts' / firmware['id']]
+    assert config['firmware'] == str(tmp_path / 'service-view')
+    assert config['maps'] == str(tmp_path / 'service-mounts' / maps['id'])
+
+
+def test_prepared_guest_does_not_remount_host_library(monkeypatch):
+    monkeypatch.setattr(backend, 'library_item', lambda _: pytest.fail('Guest must not open host library'))
+    config = {'firmware': '/firmware', 'display_backend': 'provided'}
+    supervisor.prepare_firmware_mounts(config)
+    assert config['firmware'] == '/firmware'
 
 
 def test_native_service_directory_is_private_and_rejects_symlinks(tmp_path):
@@ -388,6 +455,64 @@ def test_a_model3_car_type_is_refused_in_the_dual_display_layout(tmp_path):
     assert json.loads(supervisor.user_profile(tmp_path, base).read_text())['signals']['VAPI_carType'] == 'ModelX'
     assert json.loads((tmp_path / 'config-values.json').read_text()) == {'VAPI_trim': 5}
     assert json.loads((tmp_path / 'config-conflicts.json').read_text()) == ['VAPI_carType']
+
+
+def test_model3_environment_keeps_profile_and_saved_car_config(tmp_path):
+    import json
+    (tmp_path / 'config-values.json').write_text(json.dumps(
+        {'VAPI_carType': 'Model3', 'VAPI_trim': 7, 'GUI_language': 'English'}))
+    env = supervisor.vehicle_environment({'single_display': True, 'firmware_version': '2026.26.6.5'}, tmp_path)
+    assert env['UI_PLATFORM'] == 'M3' and env['UI_TARGET'] == 'ICE'
+    assert env['TESLA_NATIVE_EXTENDED_VIZ'] == '1'
+    assert env['TESLA_NATIVE_FSD_PANEL_PREVIEW'] == '0'
+    assert env['UI_VEHICLE'] == env['TESLA_NATIVE_CAR_TYPE'] == 'Model3'
+    signals = json.loads(Path(env['TESLA_NATIVE_VEHICLE_PROFILE']).read_text())['signals']
+    assert signals['VAPI_carType'] == 'Model3' and signals['VAPI_trim'] == 7
+    assert signals['VAPI_carVersionString'] == '2026.26.6.5' and signals['VAPI_chassisType'] == '3'
+    assert 'GUI_language' not in signals and not (tmp_path / 'config-conflicts.json').exists()
+    assert 'VAPI_navigationEngine' not in signals
+    env = supervisor.vehicle_environment({'single_display': True, 'maps': '/selected/maps'}, tmp_path)
+    signals = json.loads(Path(env['TESLA_NATIVE_VEHICLE_PROFILE']).read_text())['signals']
+    assert signals['VAPI_navigationEngine'] == 'Tesla'
+
+
+def test_sx_identity_is_dropped_on_model3_and_sx_defaults_remain_available(tmp_path):
+    import json
+    (tmp_path / 'config-values.json').write_text('{"VAPI_carType": "ModelX"}')
+    assert supervisor.vehicle_environment({'single_display': True}, tmp_path)['TESLA_NATIVE_CAR_TYPE'] == 'Model3'
+    assert json.loads((tmp_path / 'config-values.json').read_text()) == {}
+    (tmp_path / 'config-values.json').write_text('{"VAPI_carType": "ModelS2"}')
+    env = supervisor.vehicle_environment({'single_display': False}, tmp_path)
+    assert env['UI_PLATFORM'] == 'SX' and env['UI_VEHICLE'] == env['TESLA_NATIVE_CAR_TYPE'] == 'ModelS2'
+    assert env['TESLA_NATIVE_EXTENDED_VIZ'] == '0'
+    assert env['TESLA_NATIVE_FSD_PANEL_PREVIEW'] == '0'
+
+
+@pytest.mark.parametrize('case', ['enabled', 'strings', 'sx', 'false', 'absent',
+                                 'not_explicit', 'numeric', 'bad_values', 'bad_explicit'])
+def test_native_fsd_preview_requires_model3_and_explicit_true_preferences(tmp_path, case):
+    import json
+    values = dict.fromkeys(('FEATURE_fullSelfDriving', 'GUI_fsdControlEnabled',
+                            'GUI_enableStartFsdFromPark'), True)
+    explicit = list(values)
+    if case == 'strings':
+        values = dict.fromkeys(values, 'true')
+    elif case == 'false':
+        values['GUI_fsdControlEnabled'] = False
+    elif case == 'absent':
+        values.pop('GUI_enableStartFsdFromPark')
+    elif case == 'not_explicit':
+        explicit.remove('FEATURE_fullSelfDriving')
+    elif case == 'numeric':
+        values['GUI_enableStartFsdFromPark'] = 1
+    elif case == 'bad_values':
+        values = list(values)
+    elif case == 'bad_explicit':
+        explicit = dict.fromkeys(explicit, True)
+    (tmp_path / 'config-values.json').write_text(json.dumps(values))
+    (tmp_path / 'config-explicit.json').write_text(json.dumps(explicit))
+    env = supervisor.vehicle_environment({'single_display': case != 'sx'}, tmp_path)
+    assert env['TESLA_NATIVE_FSD_PANEL_PREVIEW'] == ('1' if case in ('enabled', 'strings') else '0')
 
 
 def test_explicit_names_are_remembered_only_while_they_are_deliberate(tmp_path, monkeypatch):

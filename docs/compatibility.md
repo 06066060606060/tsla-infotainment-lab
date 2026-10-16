@@ -21,8 +21,8 @@ engine. They have not been validated inside the QEMU guest, and no
 | Native fonts | Both Qt displays load Universal Sans from the selected firmware; Fontconfig uses an image-specific font directory and private cache. |
 | `2026.26.6.1` Model S/X MCU2 (`modelsx_info2`) | Supported exact launch profile, with center display and instrument cluster. |
 | Other Model S/X MCU2 builds | Launch on the **experimental** generic MCU2 profile (`mcu2-generic`), without a build-ID check. Used daily with 2026.8.3 on the native engine; no validation record and no QEMU validation. |
-| Other ICE (MRB) builds | Experimental generic single-display profile (`ice-mrb-generic`); unverified. |
-| Maps | A supplied NA image can be inspected/mounted. A street base map rendered after valid replay GPS, in a session without an offline map mounted. Offline NA imagery and routing remain unverified. |
+| ICE (MRB) / Model 3 builds | Experimental generic single-display launch profile (`ice-mrb-generic`) with a dedicated Model 3 vehicle profile, landscape center display and no instrument cluster. Native startup and profile readback smoke-checked on 2026.26.6.5; other builds and QEMU remain unverified. See [validation](VALIDATION.md). |
+| Maps | Supplied NA and EU TeslaMaps SquashFS images (`.map`, `.ssq`, `.squashfs`) can be imported and mounted read-only. A street base map rendered after valid replay GPS, in a session without an offline map mounted. Imported files are not connected to the navigation engine; offline imagery and routing remain unverified. |
 | Locally built Debian 13 executable | Built and tested with glibc 2.41; older glibc versions remain unverified. Source launch is available; CI is configured for Ubuntu 22.04. |
 
 The launch profile is recorded in the application's `profiles.json`:
@@ -88,7 +88,7 @@ drawtext. See [replay documentation](replay.md).
 | Energy | Battery, charge limit, charging state and power; charging also sets `GTW_chargeState` and the charge-port cover and latch; power meter from -100 kW to +400 kW | No battery model or charging equipment. The kW unit of `VAPI_powerLevel`, `GTW_chargeState` `Charging` and the charge-port values are read from the firmware or parked-car exports, not yet observed on a running UI. |
 | Audio | Shared volume/mute and host audio-stream control | Only the mounted firmware's streams are adjusted. |
 | Navigation | Supplied GPS, heading, destination label and remaining trip metadata; street base map observed after valid replay GPS | Offline NA imagery, route computation and live traffic remain unverified. |
-| Tires | Four editable local pressure values | Native TPMS units remain unverified; pressure is not injected. |
+| Tires | Four editable simulated pressures with native field readback | Bar/Psi rendering verified on Model 3 ICE; physical sensors and calibration remain outside the local model. |
 | Driving state | Same local inputs sent to both displays, with readback. Car off shifts to Park and turns off the power rails, driver present, accessory power and display keep-alive values | Does not recreate the complete vehicle IPC graph. The screens sleeping after Car off has not been observed on a running UI yet. |
 | Preferences | Santa, supported theme/wheel and unit/audio preferences; center-owned playback metadata forwarded to instruments | The current default session reports 23 shared values; unsupported fields remain in diagnostics. |
 | Service Mode | Native center entry through the normal access-code flow; enter/exit state forwarded to the instrument cluster; the firmware's Service panel (`chromium-odin` and `service-ui`) is started locally, with an Odin engine stand-in serving the image's task catalogue | Tasks never run (they report that no vehicle is attached); gateway-config values are placeholders. Functions needing a service token or vehicle identity, complete diagnostic gateway services and Service Mode Plus are not implemented. |

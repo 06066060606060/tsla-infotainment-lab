@@ -10,7 +10,7 @@ import backend
 from guest_status import session_status
 
 ACTIONS = frozenset(('status', 'controls', 'preview', 'capture', 'camera-preview',
-                     'camera', 'replay', 'vehicle-services', 'config-values', 'browser', 'steering', 'logs', 'focus',
+                     'camera', 'replay', 'vehicle-services', 'config-values', 'browser', 'steering', 'logs', 'debug', 'focus',
                      'can', 'can-start', 'can-status'))
 
 
@@ -68,6 +68,8 @@ def handle(action, payload):
         return backend.can_status()
     if action == 'focus':
         return backend.focus_display(payload.get('display', 'center'))
+    if action == 'debug':
+        return backend.debug_logs.snapshot(backend.DATA / 'session', backend.UNIT, guest=True)
     logs = {}
     for path in (backend.DATA / 'session').glob('*.log'):
         with path.open('rb') as stream:

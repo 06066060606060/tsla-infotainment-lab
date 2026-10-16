@@ -39,6 +39,12 @@ def test_media_window_uses_its_own_profile_and_only_maps_local_firmware_services
     args = media_browser_arguments(tmp_path / 'fw', tmp_path / 'state', tmp_path / 'runtime')
     assert '--tesla-dbus-service-name=com.tesla.ChromiumApp' in args
     assert '--keyboard-app-name=ChromiumApp' in args
+    assert args[-1] == 'http://firmware-media.vn.teslamotors.com:9000'
+    assert not any(arg.startswith('--app=') for arg in args)
+    for switch in ('--disable-status-bubble', '--disable-tab-strip',
+                   '--disable-toolbar', '--disable-location-bar'):
+        assert switch in args
+        assert switch not in browser_arguments(tmp_path / 'fw', tmp_path / 'state', tmp_path / 'runtime', 'browser')
     assert any('chromium-media-profile' in item for item in args)
     resolver = next(item for item in args if item.startswith('--host-resolver-rules='))
     local = [rule for rule in resolver.split('=', 1)[1].split(', ') if not rule.endswith('~NOTFOUND')]
@@ -74,6 +80,12 @@ def test_media_server_omits_flags_the_firmware_does_not_define(tmp_path):
 def test_media_server_keeps_every_flag_without_usage(tmp_path):
     argv, dropped = media_webapp_arguments(tmp_path, '2026.1', '')
     assert dropped == [] and '-secondary_port=9007' in argv and '-tertiary_port=9009' in argv
+
+
+def test_media_server_uses_the_selected_vehicle_identity(tmp_path):
+    for car in ('Model3', 'ModelX', 'ModelS2'):
+        args, _ = media_webapp_arguments(tmp_path, '2026.26.6.5', car_type=car)
+        assert f'-chassis_type={car}' in args and '-chassis_type=mx' not in args
 
 
 def test_service_mode_browser_mirrors_the_firmware_chromium_odin(tmp_path):

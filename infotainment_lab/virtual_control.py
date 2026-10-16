@@ -9,11 +9,13 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 from . import qemu_virtual as vm
 from .core import atomic_json, profile_for
 from .display_scale import firmware_scale
 from .qemu_runtime import read_state, verify_identity
+from . import firmware_files, debug_logs
 
 
 def build_manifest(directory):
@@ -30,7 +32,7 @@ def directory_for(args, backend):
 
 def probe(directory, backend):
     from .qemu_audio import required
-    dependencies = ['qemu-system-x86_64', 'xdotool', 'unsquashfs', 'pactl']
+    dependencies = ['qemu-system-x86_64', 'xdotool', 'unsquashfs', 'squashfuse', 'fusermount3', 'pactl']
     if required():
         dependencies += ['pulseaudio', 'parec', 'pacat']
     missing = [name for name in dependencies if not shutil.which(name)]
@@ -77,7 +79,7 @@ def prepare(args, directory, backend):
     directory.parent.mkdir(parents=True, exist_ok=True)
     backend.run(['apt-get', 'update'], timeout=300)
     dependencies = ['debootstrap', 'qemu-system-x86', 'qemu-system-gui',
-                    'e2fsprogs', 'squashfs-tools', 'xdotool', 'pulseaudio-utils']
+                    'e2fsprogs', 'squashfs-tools', 'squashfuse', 'fuse3', 'xdotool', 'pulseaudio-utils']
     from .qemu_audio import required
     if required():
         dependencies.append('pulseaudio')
@@ -96,6 +98,15 @@ def dispatch(args, backend):
         return prepare(args, directory, backend)
     if action == 'status':
         return vm.status(directory) if directory.exists() else {'phase': 'stopped', 'mode': 'virtual-hardware'}
+    if action == 'debug':
+        logs = {name: debug_logs.tail(directory / name) for name in ('vm-serial.log', 'vm-launch.log') if (directory / name).exists()}
+        notice = ''
+        try:
+            guest = vm.guest_action(directory, 'debug', timeout=4)
+            logs.update({'Guest / ' + name: text for name, text in guest.get('logs', {}).items()})
+        except (OSError, RuntimeError, ValueError) as exc:
+            notice = 'Guest journals unavailable; serial output remains available. ' + str(exc)
+        return {'logs': logs, 'context': 'QEMU guest OS', 'notice': notice, 'captured_at': time.time()}
     if action == 'report':
         environment = probe(directory, backend)
         return backend.public_report(environment['status'], environment)
@@ -122,6 +133,7 @@ def dispatch(args, backend):
         scale = firmware_scale(single) if build_manifest(directory).get('display_scale') else 1.0
         options = {'firmware_id': item['id'], 'browser': not args.no_browser,
                    'cluster': not args.no_cluster, 'map_id': args.map_id, 'display_scale': scale}
+        stage_replacements(directory, backend, options)
         options_file = directory / 'launch-options.json'
         atomic_json(options_file, options)
         maps = None
@@ -139,6 +151,11 @@ def dispatch(args, backend):
         return {'phase': 'stopping', 'mode': 'virtual-hardware'}
     if action == 'restart':
         previous = read_state(directory)
+        options_file = previous.get('files', {}).get('options_file')
+        if options_file:
+            options = backend.load_json(Path(options_file), {})
+            stage_replacements(directory, backend, options)
+            atomic_json(Path(options_file), options)
         vm.shutdown(directory)
         deadline = time.monotonic() + 40
         while time.monotonic() < deadline:
@@ -173,3 +190,22 @@ def dispatch(args, backend):
     else:
         payload = json.loads(args.payload)
     return vm.guest_action(directory, action, payload)
+
+
+def stage_replacements(directory, backend, options):
+    """Share only explicit replacements. Never silently boot without selected files."""
+    identifier = options.get('firmware_id')
+    if not identifier:
+        return
+    with firmware_files.lock(backend.DATA):
+        upper = firmware_files.tree(backend.DATA, identifier)
+        values = firmware_files.entries(upper)
+        options.pop('replacements', None)
+        if not values:
+            return
+        if not build_manifest(directory).get('firmware_replacements'):
+            raise RuntimeError('Rebuild the QEMU guest with scripts/build-virtual-guest.py to use firmware replacements.')
+        from .virtual_inputs import share_directory
+        name = 'firmware-replacements-' + uuid.uuid4().hex
+        shutil.copytree(upper, share_directory(directory) / name)
+        options['replacements'] = name

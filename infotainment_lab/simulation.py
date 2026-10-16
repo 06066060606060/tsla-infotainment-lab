@@ -87,7 +87,9 @@ def display_values(sim: Simulation) -> dict[str, dict]:
     yaw_rate = signed_speed / WHEELBASE_M * math.tan(math.radians(road_wheel_deg))
     return {
         'gear': {'VAPI_shiftState': sim.gear, 'LOC_playbackShiftState': sim.gear,
-                 'VAPI_vehicleDirection': 1 if sim.gear == 'R' else 0},
+                 'VAPI_vehicleDirection': 1 if sim.gear == 'R' else 0,
+                 'VAPI_parkBrakeApplied': sim.gear == 'P',
+                 'VAPI_telltaleParkingBrakeAmber': 'Off'},
         'speed_kph': {'VAPI_vehicleSpeed': speed_mps, 'VAPI_signedVehicleSpeed': signed_speed,
                       'VAPI_displaySpeed': sim.speed_kph,
                       'LOC_playbackGPS_vehicleSpeed': speed_mps},

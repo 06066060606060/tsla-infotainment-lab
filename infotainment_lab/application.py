@@ -29,6 +29,7 @@ from .lab_panels import BrowserPanel, CanPanel, ConsolePanel, ReplayPanel, Servi
 from .config_panel import ConfigPanel
 from .steering import ACTIONS as STEERING_ACTIONS
 from .hold_button import HoldButton
+from .diagnostic_panels import FirmwareFilesPanel, DebugPanel
 
 from .theme import apply_theme, current_colors, state, stylesheet, colors
 
@@ -125,6 +126,9 @@ class MainWindow(QMainWindow):
         self.camera_timer = QTimer(self)
         self.camera_timer.timeout.connect(self.refresh_camera)
         self.camera_timer.start(1000)
+        self.debug_timer = QTimer(self)
+        self.debug_timer.timeout.connect(lambda: self.debug_panel.refresh() if self.current_page == 9 and self.debug_panel.auto.isChecked() else None)
+        self.debug_timer.start(2000)
         self.control_timer = QTimer(self)
         self.control_timer.setSingleShot(True)
         self.control_timer.timeout.connect(self.send_controls)
@@ -168,7 +172,7 @@ class MainWindow(QMainWindow):
         for index, en, symbol in ((0, 'Devices', 'devices'), (1, 'Controls', 'controls'),
                                   (2, 'Camera & replay', 'camera'), (5, 'Browsers', 'screen'),
                                   (6, 'CAN & gateway', 'controls'), (7, 'Console', 'settings'), (8, 'Vehicle config', 'settings'),
-                                  (3, 'Diagnostics', 'settings'), (4, 'About', 'help')):
+                                  (3, 'Diagnostics', 'settings'), (9, 'Debug', 'settings'), (4, 'About', 'help')):
             nav = QToolButton()
             nav.setText(en.replace('&', '&&'))
             nav.setProperty('full_text', en)
@@ -243,9 +247,11 @@ class MainWindow(QMainWindow):
         self.can_panel = CanPanel(self)
         self.console_panel = ConsolePanel(self)
         self.config_panel = ConfigPanel(self)
+        self.firmware_files_panel = FirmwareFilesPanel(self)
+        self.debug_panel = DebugPanel(self)
         if config_draft: self.config_panel.restore_draft(config_draft)
         if browser_draft: self.browser_panel.restore_draft(browser_draft)
-        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.can_panel, self.console_panel, self.config_panel):
+        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.can_panel, self.console_panel, self.config_panel, self.debug_panel):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -502,6 +508,9 @@ class MainWindow(QMainWindow):
         self.alert_rows.setSpacing(10)
         alerts.addLayout(self.alert_rows)
         layout.insertWidget(2, self.alert_box)
+        replacements, inner = card()
+        inner.addWidget(self.firmware_files_panel)
+        layout.addWidget(replacements)
         self.refresh_alerts()
         return page
 
@@ -560,10 +569,14 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         titles = ("Device manager", "Vehicle controls", "Camera & replay",
                   "Diagnostics", "About this lab", 'Browser workspace',
-                  'CAN & gateway', 'Console', 'Vehicle configuration')
+                  'CAN & gateway', 'Console', 'Vehicle configuration', 'Debug')
         self.page_title.setText(titles[index])
         self.nav_group.button(index).setChecked(True)
         self.refresh_icons()
+        if index == 9:
+            self.debug_panel.refresh()
+        elif index == 3:
+            self.firmware_files_panel.refresh()
 
     def refresh_icons(self):
         c = current_colors()
@@ -611,7 +624,7 @@ class MainWindow(QMainWindow):
 
     def choose_files(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Import firmware or maps", "",
-                                               "Firmware and maps (*.mcu2 *.ice *.map *.squashfs);;All files (*)")
+                                               "Firmware and maps (*.mcu2 *.ice *.map *.ssq *.squashfs);;All files (*)")
         self.queue_imports(paths)
 
     def queue_imports(self, paths):
@@ -653,6 +666,7 @@ class MainWindow(QMainWindow):
         self.loaded_device_id = None
         self.device_selected()
         self.filter_library(self.search.text())
+        self.firmware_files_panel.update_library(self.library)
 
     def selected_item(self):
         if not hasattr(self, "items"): return None
@@ -679,7 +693,7 @@ class MainWindow(QMainWindow):
         self.operation("start", *args)
 
     def full_reset(self):
-        text = ('Delete all cached data, saved settings and the library index, as if the app had just been installed? '
+        text = ('Delete all cached data, firmware replacements, saved settings and the library index, as if the app had just been installed? '
                 'The session stops, the firmware image is unmounted and images must be imported again. '
                 'Your original files are not touched.')
         if QMessageBox.warning(self, 'Full reset', text, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) == QMessageBox.Yes:
@@ -696,6 +710,7 @@ class MainWindow(QMainWindow):
         self.bridge.configure(engine, self.vm_directory.text().strip())
         self.vm_options.setVisible(engine == 'qemu')
         self.environment, self.session = {}, {}
+        self.debug_panel.reset()
         self.bridge.call('probe')
         self.update_status()
 
@@ -706,6 +721,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue('vm_directory', directory)
         self.bridge.configure(self.bridge.engine, directory)
         self.environment, self.session = {}, {}
+        self.debug_panel.reset()
         self.bridge.call('probe')
         self.update_status()
 
@@ -734,6 +750,12 @@ class MainWindow(QMainWindow):
         self.bridge.call('steering', '--button', action)
 
     def received(self, action, result):
+        if action == 'firmware-files':
+            self.firmware_files_panel.received(result)
+            return
+        if action == 'debug':
+            self.debug_panel.received(result)
+            return
         if action == 'ssh-key':
             self.console_panel.key_result(result)
             return
@@ -848,15 +870,25 @@ class MainWindow(QMainWindow):
     def update_status(self):
         if not hasattr(self, 'start_button') or not hasattr(self, 'tool_buttons'):
             return
+        selected = self.selected_item()
+        profile = profile_for(selected['version'], selected['variant']) if selected else None
+        self.overview.single_display = bool(profile and profile.get('single_display'))
+        self.config_panel.set_layout(self.overview.single_display)
         phase = self.session.get('phase', 'stopped')
         live = phase in ('starting', 'booting', 'running', 'degraded', 'stopping')
         usable = phase in ('running', 'degraded')
+        navigation = self.session.get('navigation', {})
+        nav_text = {'engine-ready': 'Offline routing engine ready', 'starting': 'Starting offline navigation',
+                    'waiting-services': 'Offline navigation is waiting for its services'}.get(navigation.get('state'))
+        self.maps_hint.setText((nav_text + ' · ' + navigation.get('version', '') + '. Street map imagery uses the network provider.')
+                               if nav_text else 'Select a TeslaMaps image for offline routing. Street map imagery uses the network provider.')
         for button in getattr(self, 'wheel_buttons', []):
             button.setEnabled(usable)
         self.browser_panel.update_status(self.session)
         self.replay_panel.update_status(self.session)
         self.services_panel.update_status(self.session)
         self.config_panel.update_status(self.session)
+        self.firmware_files_panel.update_status(self.session)
         if hasattr(self, 'control_timer') and not self.manual_override and not self.control_timer.isActive() and 'controls' not in self.bridge.pending:
             actual = self.session.get('replay', {}).get('telemetry_sample', {})
             if self.session.get('camera', {}).get('mode') == 'replay' and self.session.get('replay', {}).get('phase') in ('playing', 'paused', 'seeking-playing', 'ended') and actual:
@@ -914,8 +946,6 @@ class MainWindow(QMainWindow):
             self.item_detail.setText('SHA-256 recorded · ' + selected['sha256'][:12] + '…')
         else:
             self.item_detail.setText('Add a firmware image to create a device.')
-        profile = profile_for(selected['version'], selected['variant']) if selected else None
-        self.overview.single_display = bool(profile and profile.get('single_display'))
         self.device_title.setText(title)
         self.device_subtitle.setText(subtitle)
         phases = {'stopped': ('Offline'), 'starting': ('Starting'), 'booting': ('Booting'),

@@ -35,3 +35,21 @@ def test_firmware_lookups_of_tesla_domains_fail_and_media_names_stay_local(tmp_p
     assert 'notesla.com' not in run.stderr  # a lookalike domain is not blocked
     assert 'netguard: blocked lookup of hermes.vn.teslamotors.com' in run.stderr
 
+
+@pytest.mark.skipif(os.name == 'nt' or not shutil.which('gcc'), reason='Linux preload shim')
+@pytest.mark.parametrize('enabled', ['0', '1'])
+def test_navigation_rpc_listener_is_local_without_changing_udp_telemetry(tmp_path, enabled):
+    library = tmp_path / 'netguard.so'
+    subprocess.run(['gcc', '-shared', '-fPIC', '-Wall', '-Wextra', '-Werror', str(SHIM),
+                    '-o', str(library), '-ldl'], check=True, capture_output=True)
+    probe = '''
+import socket
+for kind in [socket.SOCK_STREAM, socket.SOCK_DGRAM]:
+    with socket.socket(socket.AF_INET, kind) as s:
+        s.bind(('0.0.0.0', 0))
+        print(s.getsockname()[0])
+'''
+    result = subprocess.run([sys.executable, '-c', probe], capture_output=True, text=True, check=True,
+        env=dict(os.environ, LD_PRELOAD=str(library), TESLA_NATIVE_SERVICE_LOOPBACK=enabled))
+    assert result.stdout.splitlines() == ['127.0.0.1' if enabled == '1' else '0.0.0.0', '0.0.0.0']
+
