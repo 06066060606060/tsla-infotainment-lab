@@ -7,8 +7,21 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import re
 
 DOOR_FLAGS = ('DriverFront', 'PassengerFront', 'DriverRear', 'PassengerRear', 'TrunkFront', 'TrunkRear')
+PARK_ZONES = (
+    ('front_left', 'frontLeft', 'Front left'),
+    ('front_left_middle', 'frontLeftMiddle', 'Front left center'),
+    ('front_middle', 'frontMiddle', 'Front center'),
+    ('front_right_middle', 'frontRightMiddle', 'Front right center'),
+    ('front_right', 'frontRight', 'Front right'),
+    ('rear_left', 'rearLeft', 'Rear left'),
+    ('rear_left_middle', 'rearLeftMiddle', 'Rear left center'),
+    ('rear_middle', 'rearMiddle', 'Rear center'),
+    ('rear_right_middle', 'rearRightMiddle', 'Rear right center'),
+    ('rear_right', 'rearRight', 'Rear right'),
+)
 
 
 def decode_door_mask(raw):
@@ -59,13 +72,30 @@ class VehicleServices:
     tire_fr_bar: float = 2.9
     tire_rl_bar: float = 2.9
     tire_rr_bar: float = 2.9
+    park_assist_simulation: bool = False
+    park_assist_fault: bool = False
+    park_front_left_cm: float = 250
+    park_front_left_middle_cm: float = 250
+    park_front_middle_cm: float = 250
+    park_front_right_middle_cm: float = 250
+    park_front_right_cm: float = 250
+    park_rear_left_cm: float = 250
+    park_rear_left_middle_cm: float = 250
+    park_rear_middle_cm: float = 250
+    park_rear_right_middle_cm: float = 250
+    park_rear_right_cm: float = 250
     power_level: float = 0.0
     developer_mode: bool = False
     service_mode: bool = False
     factory_mode: bool = False
     transport_mode: bool = False
     showroom_mode: bool = False
+<<<<<<< HEAD
+    fsd_ui_simulation: bool = False
+
+=======
     
+>>>>>>> fa2c5938bf0e0bf34be6cae10b9792865291a47e
 
     @classmethod
     def parse(cls, value: dict) -> "VehicleServices":
@@ -124,6 +154,7 @@ def _field(group, label, kind="float", low=0, high=100, **extra):
 
 
 FIELD_SPECS = {
+    "fsd_ui_simulation": _field("driver_assistance", "Enable Self-Driving UI simulation", "bool"),
     "climate_on": _field("climate", "Climate power", "bool"),
     "cabin_temp_c": _field("climate", "Cabin temperature (°C)", low=-40, high=70),
     "outside_temp_c": _field("climate", "Outside temperature (°C)", low=-50, high=70),
@@ -158,6 +189,10 @@ FIELD_SPECS = {
     "nav_destination": _field("navigation", "Destination label", "str"),
     "nav_distance_km": _field("navigation", "Distance remaining (km)", low=0, high=50000),
     "nav_eta_min": _field("navigation", "Time remaining (min)", low=0, high=100000),
+    "park_assist_simulation": _field("parking", "Enable simulated Park Assist", "bool"),
+    "park_assist_fault": _field("parking", "Simulate Park Assist failure", "bool"),
+    **{f"park_{key}_cm": _field("parking", f"{label} distance (cm)", low=0, high=250)
+       for key, native, label in PARK_ZONES},
     "developer_mode": _field("modes", "Developer mode", "bool"),
     "service_mode": _field("modes", "Service mode", "bool"),
     "factory_mode": _field("modes", "Factory mode", "bool"),
@@ -174,12 +209,13 @@ CAPABILITIES = {
     "lights": {"mode": "local-display", "detail": "Headlight/high-beam indicators and lighting telemetry."},
     "energy": {"mode": "local-display", "detail": "Battery and charging telemetry; no battery or charging-station model."},
     "audio": {"mode": "host-backed", "detail": "Volume and mute for firmware audio streams on the host."},
-    "navigation": {"mode": "local-display", "detail": "GPS, heading, destination and remaining trip metadata; offline NA imagery, route computation and live traffic remain unverified."},
+    "navigation": {"mode": "local-display", "detail": "Simulated GPS and heading; selected TeslaMaps packages provide offline routing. Street imagery uses the network provider; live traffic remains unverified."},
     "modes": {"mode": "local-display", "detail": "Developer, service and factory mode flags on the firmware displays; no vehicle-side unlock."},
-    "tires": {"mode": "local-model", "detail": "Pressure values are stored locally; native TPMS units have not been verified."},
+    "tires": {"mode": "local-display", "detail": "Simulated wheel pressures are sent in bar to native Conti/Tesla TPMS display fields. The firmware formats its selected pressure units; physical sensors and calibration are not connected."},
+    "parking": {"mode": "local-display", "detail": "Opt-in simulated ultrasonic Park Assist status and ten adjustable distances in centimeters; no camera perception, physical sensors, CAN frames or automatic steering."},
     "vehicle_hardware": {"mode": "unavailable", "detail": "Physical ECU/CAN, powertrain, charging equipment and vehicle sensors are not connected."},
     "account_services": {"mode": "unavailable", "detail": "Tesla account, phone key, cellular provisioning, payments and cloud-only services are not emulated."},
-    "driver_assistance": {"mode": "recorded-metadata", "detail": "Dashcam ADAS state can be inspected as recorded metadata; no driving-assistance controller runs."},
+    "driver_assistance": {"mode": "local-display", "detail": "Opt-in native Self-Driving button and engagement UI simulation on the configured Model 3 image. Start/Stop changes display state only; no steering, speed, gear or driving controller. Dashcam ADAS metadata remains separately available."},
 }
 
 
@@ -236,7 +272,15 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "factory_mode": {"GUI_factoryMode": v.factory_mode},
         "transport_mode": {"GUI_transportMode": v.transport_mode},
         "showroom_mode": {"GUI_showroomMode": v.showroom_mode},
+<<<<<<< HEAD
+        # Both native sensor families use bar. The pressure label itself converts
+        # to the selected display unit, so converting here would scale it twice.
+        **{f'tire_{wheel}_bar': {f'TPMS_pressure{wheel.upper()}{family}': getattr(v, f'tire_{wheel}_bar')
+                               for family in ('Conti', 'Tesla')}
+           for wheel in ('fl', 'fr', 'rl', 'rr')},
+=======
         **{name: {} for name in ("tire_fl_bar", "tire_fr_bar", "tire_rl_bar", "tire_rr_bar")},
+>>>>>>> fa2c5938bf0e0bf34be6cae10b9792865291a47e
     }
     # The charge screen keys off the gateway charge state and the port state as
     # well as the session flags. Parked-car exports show GTW_chargeState as
@@ -248,14 +292,52 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
     for field in closure_fields:
         result[field]['VAPI_doorState'] = door_mask
     if v.latitude_deg is not None and v.longitude_deg is not None:
-        result["latitude_deg"] = {"LOC_geoLat": v.latitude_deg, "NAV_vehicleLatitude": v.latitude_deg, "LOC_geoValidFix": True}
+        result["latitude_deg"] = {"LOC_geoLat": v.latitude_deg, "NAV_vehicleLatitude": v.latitude_deg, "LOC_geoValidFix": True,
+                                  "LOC_geoLocation": [round(v.latitude_deg, 6), round(v.longitude_deg, 6)]}
         result["longitude_deg"] = {"LOC_geoLon": v.longitude_deg, "NAV_vehicleLongitude": v.longitude_deg}
     else:
         result["latitude_deg"] = {"LOC_geoValidFix": False}
         result["longitude_deg"] = {}
     if v.heading_deg is not None:
         result["heading_deg"] = {"LOC_geoHdg": v.heading_deg % 360}
+    result.update(park_assist_values(v))
     return result
+
+
+def park_assist_values(model: VehicleServices) -> dict:
+    """Publish only simulated ultrasonic telemetry, never vehicle commands.
+
+    The processed native PARK distances and their USS inputs use centimeters.
+    Negative distances clear stale obstacles when simulation stops or fails.
+    """
+    healthy = model.park_assist_simulation and not model.park_assist_fault
+    status = ('Disabled' if not model.park_assist_simulation else
+              'TemporaryFailure' if model.park_assist_fault else 'Enabled')
+    result = {'park_assist_simulation': {'PARK_USS_status': status,
+                                       'PARK_service': 'None',
+                                       'PARK_sdiActive': healthy,
+                                       'PARK_sdiNoise': 'Nominal'},
+              'park_assist_fault': {'PARK_status': status}}
+    for key, native, _ in PARK_ZONES:
+        value = getattr(model, f'park_{key}_cm') if healthy else -1.0
+        result[f'park_{key}_cm'] = {f'PARK_{native}': value, f'PARK_USS_{native}': value}
+    return result
+
+
+def navigation_fix(model: VehicleServices, timestamp: float) -> dict:
+    """Feed the native localizer's scalar position and fresh estimate clock.
+
+    The displayed coordinate alone does not update the routing origin. These
+    estimated GPS values drive that origin without a physical GPS service.
+    """
+    if model.latitude_deg is None or model.longitude_deg is None:
+        return {'LOC_estimatedGPSValid': False}
+    return {'LOC_estimatedLat': model.latitude_deg,
+            'LOC_estimatedLon': model.longitude_deg,
+            'LOC_estimatedHdg': (model.heading_deg or 0) % 360,
+            'LOC_geoAccuracy': 2.0,
+            'LOC_estimatedGPSValid': True,
+            'LOC_estimatedGeoTimestamp': float(timestamp)}
 
 
 # Native UI changes to these request fields update the local model. They are
@@ -496,6 +578,18 @@ class DisplayWriter:
         self.supported[name] = bool(ok)
         if not ok:
             return False, None
+        if name == 'LOC_geoLocation':
+            # The native coordinate DV accepts a QVariantList [latitude, longitude]
+            # and reads back a human-readable pair with six fractional digits.
+            match = re.fullmatch(r'\(([\d.+-]+) ([NS]), ([\d.+-]+) ([EW])\)', str(raw))
+            if match:
+                lat, ns, lon, ew = match.groups()
+                return True, [abs(float(lat)) * (-1 if ns == 'S' else 1),
+                              abs(float(lon)) * (-1 if ew == 'W' else 1)]
+        if name in ('VAPI_chassisType', 'VAPI_trim'):
+            # These are enum labels, including numeric text ('3', '74'). Parsing
+            # them as telemetry numbers loses their type and defeats readback.
+            return True, str(raw)
         if name == 'VAPI_doorState':
             return True, decode_door_mask(str(raw))
         if name == 'VAPI_vehicleDirection' and str(raw) in ('Forwards', 'Backwards'):
