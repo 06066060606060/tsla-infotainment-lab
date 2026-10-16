@@ -2,6 +2,40 @@
 
 ## Unreleased — Console, vehicle config and Service Mode
 
+- Restored the native Start Self-Driving panel in explicitly configured Model 3 lab sessions. It is constructed before late profile writes and revealed after native view creation completes. Added an opt-in Self-Driving UI simulation under Controls: the blue Start button selects simulated ActiveFsd, and Stop returns to Available. Disabling restores the previous AP state; each restart begins disengaged. Simulated requests remain local and never change speed, gear or steering. With simulation off, native button availability remains authoritative.
+
+- Recheck explicitly selected local FSD UI inputs with firmware readback every two seconds so late service defaults cannot silently replace them. Other settings retain change-only writes, and learned vehicle configuration fields are excluded. Enabled the existing session's Start FSD from Park preference; the native Start button remains unavailable without Autopilot feedback.
+
+- Corrected the Model 3 navigation-country GUI field to the ISO alpha-3 value `USA`. Documented a local map-coverage override for the FSD menu exercise, removing the native regional message while preserving GPS coordinates and read-only firmware.
+
+- Documented and validated a session-only Model 3 FSD menu setup using an AP3 hardware profile, local feature/preferences and an explicitly simulated FSD map-availability flag. Native readback survives restart; no driving engagement or FSD controller is supplied.
+
+- Added an opt-in Park Assist simulation under Controls with ten adjustable ultrasonic distances in centimeters and a failure switch. Native status, service and sensor-interface health accompany the distances; disabling or failing the simulation clears stale obstacles. On the local Model 3 image, the USS preference restores the native distance arcs and removes the unavailable warning when healthy.
+- Enabled the native Audio source selector by default in the Model 3 profile (`GUI_enableSourcePicker`). The Sources section and its individual visibility switches are now available without changing media accounts or subscription requirements.
+
+- Replaced the browser landing page with a clearly identified local test page, adding a local HTTP check, viewport details and keyboard-event count alongside touch/drag, audio, generated video, scroll and WebGL checks. The tests no longer link to an external site; the source and staged runtime locations are documented.
+
+- Fixed the Model 3 visualization refusing the rightward expansion gesture in Park. The single-display desktop adapter now permits the parked layout using native state queries, retaining the track-mode exclusion and normal behavior outside the opt-in.
+- Fixed Service Mode remaining on its startup screen on newer ICE images. Detect the diagnostic web backend under `opt/diag` independently of the Odin task assets under `opt/odin`, and supply its missing boot-generated model selector through a session-only, read-only path adapter. Vehicle/gateway credentials and authentication remain unchanged.
+
+- **FRAME INJECTION.** Replaced Lab gateway tools in CAN & gateway with continuous, individually enabled echo rules for observed native Gateway Ethernet frames. DBC signal overrides preserve all unselected bits from each new source frame, with explicit local destination, applied-state acknowledgement, echo/skip counters, disable/delete and Stop all. Rules start disabled, stop on device restart or DBC change, and do not capture their own sends. Invalid or ambiguous edits are refused; checksum recovery and physical CAN forwarding are not inferred.
+
+- **OS traffic observation.** CAN & gateway now opens on a passive view of the running firmware's raw gateway records and decoded signals, with Party, Chassis, Body/VH and Gateway/Ethernet filters, display pause and CSV copying. Model 3 sessions start the native vehicle emitter with private output sockets and shared-memory IPC. Successful loopback UDP sends are distinguished from gateway API requests. The selected firmware supplies message names, units and enums; a user-selected DBC supplies bit layouts. Ambiguous multiplex definitions are omitted, and no physical CAN bus is inferred from Ethernet message numbers. The independent emulated LAB gateway remains available through the CLI.
+
+- **Panel 0.5.5.** Model 3 sessions run the firmware's asset generator in an owned worker with a shared session cache, restoring the configured vehicle illustration in the tire card. The card no longer waits on a decorative asset-generation spinner. Media apps such as TuneIn use the firmware's toolbar controls to hide the browser address bar while preserving native window and D-Bus integration; normal browser navigation remains available.
+
+- Fixed the native PARK telltale remaining in Drive by sending simulated parking-brake state with gear changes. Model 3 sessions now declare support for the native expandable visualization layout; the saved visualization preference controls its swipe gesture.
+
+- Fixed simulated tire pressures staying local instead of appearing in the native Tesla interface. All four wheels now feed the Conti and Tesla TPMS display fields in bar, with native unit formatting and per-field readback.
+
+- Removed the native "USING TESLAMAPS" debug banner by selecting the map engine through the session vehicle profile instead of the debug force override.
+
+- **European maps and offline routing.** The library accepts EU and NA TeslaMaps SquashFS images, including `.ssq` files, with bounded multiline version metadata. Native sessions connect the selected read-only tiles and address database to owned Valhalla and TeslaMaps processes using private IPC and loopback TCP listeners. Simulated and replay GPS feed the native routing origin with a fresh estimate clock; coordinate readback and periodic verification restore lost fixes. Map status distinguishes the local routing engine from Internet-dependent street imagery. European route guidance was verified in the Model 3 ICE session.
+
+- Fixed ICE startup crashing after the native Splash Screen Mode was saved. A narrowly matched display-state shim skips the early `restartTimer` callback while its active state is still null; initialized callbacks and other implementations pass through. The local splash-screen setting was disabled and saved as a configuration override.
+
+- **Model 3 vehicle configuration.** ICE/MRB sessions now load a dedicated experimental Model 3 RWD profile instead of disabling vehicle-profile writes. The native UI, state writer and media server share that identity; the ICE target follows the image's launch environment and the version follows the selected image. Invalid numeric defaults were corrected using the 2026.26.6.5 ICE enum names (chassis ordinal 3 was Model Y), with previous local signals retained as reference metadata. Vehicle config defaults, saved edits and imports are separated by Model 3 versus S/X layout; numeric enum labels such as chassis `"3"` remain strings. S/X retains its original defaults. Profile writes report firmware readback, including rejected or mismatched values. Generic firmware compatibility remains experimental.
+
 - Fixed firmware startup reporting a missing `usr/share/fonts` after a WSL restart even when fonts exist. The desktop worker and systemd service can see different mount namespaces; the supervisor now establishes its firmware, replacement view and map mounts inside the service before reading the image.
 
 - **Firmware replacements.** Diagnostics can replace existing files in an imported SquashFS through a read-only overlay, with per-image persistence and restoration of individual originals. The original image is unchanged. Active sessions block edits; Stop releases overlay mounts before SquashFS mounts, and Full reset removes replacements. Native setup includes `fuse-overlayfs`; QEMU uses a private read-only replacement snapshot and requires an updated guest build.

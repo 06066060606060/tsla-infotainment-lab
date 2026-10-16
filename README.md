@@ -1,10 +1,10 @@
 # Infotainment Lab
 
-[Download](https://github.com/derrickyau9/tsla-infotainment-lab/releases/latest) · [Changelog](CHANGELOG.md)
+[Source](https://github.com/derrickyau9/tsla-infotainment-lab/releases/latest) · [Changelog](CHANGELOG.md)
 
 Run infotainment software on your own computer, with the center display and instrument cluster in separate desktop windows. A native Qt app handles your firmware library, driving controls, browser windows, cameras, and recorded drives.
 
-Infotainment Lab runs on Linux and Windows with Debian WSL2. The Material 3 control panel supports native and QEMU desktop sessions. The latest release, **0.5.1**, fixes native startup and QEMU idle-display stalls; the [changelog](CHANGELOG.md) lists what has landed since, including the Console, Vehicle config, Alerts, the Service Mode panel and firmware network isolation.
+Infotainment Lab runs on Linux and Windows with Debian WSL2. The Material 3 control panel supports native and QEMU desktop sessions. The current panel version is **0.5.5**; the [changelog](CHANGELOG.md) records the Console, Vehicle config, Alerts, Service Mode, Model 3 display and navigation improvements.
 
 ![Device manager with the light theme](docs/screenshots/material-devices-en.png)
 
@@ -27,6 +27,18 @@ You need an x86_64 computer and a Linux graphical desktop. On Windows, install *
 Run the app as your normal desktop user. Setup asks for administrator access when it needs to install packages. Linux binary downloads require glibc 2.41 or newer.
 
 Closing the control panel leaves the session running. **Stop** ends it; **Restart** starts again in Park. Device settings and your selected map package are remembered.
+
+To import maps, click the import area on Devices and select a TeslaMaps SquashFS
+image (`.map`, `.ssq` or `.squashfs`). North America (`NA-…`) and Europe (`EU-…`)
+releases are recognized from the first line of the image's `VERSION` file.
+Select the imported release under **More options → Maps**, then start the device
+to mount it read-only. Native sessions start the firmware's Valhalla engine and
+TeslaMaps service using the selected routing tiles and address database.
+Set latitude, longitude and heading under **Vehicle services → Navigation**
+to simulate a position; these values are remembered across restarts. Street
+and satellite imagery still use the network provider and need Internet access.
+European offline routing was verified on the experimental Model 3 ICE session;
+other builds, NA routing, address search and QEMU execution remain unverified.
 
 **Full reset**, next to **QEMU boot check** on the Device page, stops the session and deletes the lab's cached session, engine copy, mount points, library index and saved device settings, as on a first import. Your firmware, map and QEMU guest files are never touched. Stop and Full reset unmount the image themselves, lazily if a Console shell or a leftover process still holds it, and a start after the mount helper died clears the dead mount and mounts the image again.
 
@@ -88,7 +100,9 @@ This is **experimental**. Tasks never run: each ends with an error saying no veh
 
 **Vehicle config** imports a `Name,Value` CSV, such as a dump from your own car. Search it, show changed values only, edit or add keys, and **Apply** to write them to the running displays; each row shows the firmware's answer. **Defaults** returns to the lab's vehicle profile and **Export CSV** saves your edits.
 
-Imports keep personal data out: logins, passwords, PINs, keys, device and network identifiers, and locations are never imported, stored or written. Live readings such as display power are listed but never written. A Model 3 configuration is refused on an image that has only the Model S/X interface.
+Defaults automatically follow the selected firmware: Model 3 for single-display ICE/MRB images, Model X for S/X images. The two layouts keep separate saved edits. Use a Model 3/ICE firmware image to run the Model 3 interface; the generic profile remains experimental.
+
+Imports keep personal data out: logins, passwords, PINs, keys, device and network identifiers, and locations are never imported, stored or written. Live readings such as display power are listed but never written. Configurations for the other layout are refused.
 
 Some car-config values make the firmware restart its UI. The lab handles that as a configuration restart, drops conflicting language settings after three restarts, and records each restart. See the [vehicle configuration guide](docs/vehicle-config.md).
 
@@ -114,7 +128,13 @@ Firmware processes and browsers the lab starts cannot reach Tesla's servers. Nam
 
 Open **Browsers**, enter an address, and choose **Browser** or **Card view**. **Theater** opens the firmware's app catalog. Browser and Card share a profile, with keyboard input, scrolling, text selection, and dragging inside the embedded view.
 
-Leave the address empty to open a local page with audio, text input, dragging, and WebGL examples. Music apps open from the center display and use their own account sign-in.
+Leave the address empty to open **Browser test page**: local HTTP checks,
+viewport details, keyboard-event count, dragging, audio, generated video, scrolling
+and WebGL. The editable source is `infotainment_lab/runtime/welcome.html`, served
+by `runtime/browser-page.py` on a loopback port chosen at each session start.
+The running copy is under `~/.local/share/tsla-infotainment-lab/engine/runtime/`;
+edit the project source for changes that survive the next runtime staging.
+Music apps open from the center display and use their own account sign-in.
 
 <img src="docs/screenshots/embedded-browser.png" width="350" alt="Chromium inside the center display" /> <img src="docs/screenshots/theater.png" width="350" alt="The native Theater catalog" />
 
@@ -130,15 +150,33 @@ To try a sample recording, run `python3 scripts/make-replay-demo.py` and open `b
 
 An existing camera pipeline can publish **1280 × 720 RGB24** frames through an atomically replaced file, such as `/tmp/tesla-sim/v4l2-back.rgb`. Enter that path in the panel. See [camera and replay formats](docs/replay.md) for the details.
 
-## CAN channels and the emulated gateway
+## CAN and gateway observation
 
-Open **CAN & gateway** to start the local CAN service. It offers the channels the vehicle names — VEH, CHASSIS and PARTY — over SocketCAN `vcan` interfaces when the kernel provides them, and over a software hub when it does not.
+Open **CAN & gateway** to observe the running Model 3 OS's gateway traffic. The
+panel shows raw records and decoded signals using a selected local DBC, with
+display pause, ID/message filtering and CSV copying. Firmware metadata supplies
+the current message names, units and enums. Network sends and gateway API
+requests are separate observation points.
 
-An emulated gateway sits between those channels and the infotainment side. Reads are published freely; a write arriving from the infotainment side needs a route, an allowlisted identifier, a valid checksum and an unlocked session, and is rate limited. Accepted climate and lighting requests feed back into the vehicle services panel, so a frame that crosses the gateway changes the session exactly as the UI would.
+Bus filters are **Party**, **Chassis**, **Body / VH**, and **Gateway / Ethernet**.
+The tested firmware sends Ethernet records toward the local gateway; their
+identifiers do not establish a physical CAN bus, so empty CAN filters stay empty.
+This view is bounded and best effort, and a successful UDP send does not prove
+delivery on a vehicle CAN bus.
 
-The panel sends a frame either through the gateway or straight onto a channel, and lists recent traffic with decoded signals. `candump` and `cansend` see the same frames when SocketCAN is selected.
+**FRAME INJECTION** creates continuous echo rules from a selected decoded
+network frame. Check the signal values to override, save the rule, then enable
+it. Each new matching OS send produces one edited Ethernet record to the same
+local Gateway (`127.0.0.102:4321`). Unselected bits follow the new source frame;
+no periodic or CSV replay is used. Rules show enabled state, echo/skip counts
+and the last output, with individual disable/delete and **Stop all echoes**.
+They are disabled on every device restart. Invalid values and ambiguous DBC
+fields are refused; counters and checksums are not recalculated automatically.
+This sends to the local gateway endpoint; it does not establish receipt by the
+OS or transmission on Party, Chassis or Body.
 
-The gateway is a behavioural model: separate channels, per-direction filters, locked by default. It contains no vendor protocol, key or authentication scheme, and the frame definitions are this project's own `LAB_*` layouts — load your own `.dbc` for anything else. See the [CAN and gateway guide](docs/can-gateway.md).
+The independent LAB gateway simulator remains available through the CLI.
+See the [CAN and gateway guide](docs/can-gateway.md) for both paths.
 
 ## Development
 
