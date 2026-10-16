@@ -90,12 +90,8 @@ class VehicleServices:
     factory_mode: bool = False
     transport_mode: bool = False
     showroom_mode: bool = False
-<<<<<<< HEAD
     fsd_ui_simulation: bool = False
 
-=======
-    
->>>>>>> fa2c5938bf0e0bf34be6cae10b9792865291a47e
 
     @classmethod
     def parse(cls, value: dict) -> "VehicleServices":
@@ -272,15 +268,11 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "factory_mode": {"GUI_factoryMode": v.factory_mode},
         "transport_mode": {"GUI_transportMode": v.transport_mode},
         "showroom_mode": {"GUI_showroomMode": v.showroom_mode},
-<<<<<<< HEAD
         # Both native sensor families use bar. The pressure label itself converts
         # to the selected display unit, so converting here would scale it twice.
         **{f'tire_{wheel}_bar': {f'TPMS_pressure{wheel.upper()}{family}': getattr(v, f'tire_{wheel}_bar')
                                for family in ('Conti', 'Tesla')}
            for wheel in ('fl', 'fr', 'rl', 'rr')},
-=======
-        **{name: {} for name in ("tire_fl_bar", "tire_fr_bar", "tire_rl_bar", "tire_rr_bar")},
->>>>>>> fa2c5938bf0e0bf34be6cae10b9792865291a47e
     }
     # The charge screen keys off the gateway charge state and the port state as
     # well as the session flags. Parked-car exports show GTW_chargeState as
