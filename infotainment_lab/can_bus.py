@@ -57,9 +57,11 @@ class Filter:
     """A gateway acceptance rule, evaluated against the raw identifier."""
     identifier: int
     mask: int = CAN_SFF_MASK
+    extended: bool = False
 
     def matches(self, frame: Frame) -> bool:
-        return frame.identifier & self.mask == self.identifier & self.mask
+        # An extended identifier is a different frame, even if its low bits match.
+        return frame.extended == self.extended and frame.identifier & self.mask == self.identifier & self.mask
 
 
 class Channel:

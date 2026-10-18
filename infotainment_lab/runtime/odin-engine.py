@@ -10,9 +10,19 @@ gateway config names, maintenance options). Executing a task always reports that
 no vehicle is attached: this talks to no vehicle, runs no diagnostics and
 implements no authentication or security access.
 
+When the lab's CAN service is running, each task is first offered to its
+emulated gateway as a LAB_gatewayRequest on the party channel, the path a
+diagnostic request takes. The gateway only passes it while unlocked and in
+Service Mode, and the result names what it decided. No ECU answers it.
+
+It also serves com.tesla.Debug /Debug, the text data-value interface QtCarServer
+provides on a car (the lab does not run QtCarServer). The panel sets
+GUI_serviceMode through it, e.g. to leave Service Mode.
+
   odin-engine.py SOCKET ODIN_DIR
 """
 import base64
+import binascii
 import hashlib
 import json
 from pathlib import Path
@@ -22,8 +32,13 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from vehicle_services import decode_value
+
 WS_GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 NO_VEHICLE = 'Infotainment Lab: no vehicle is attached, so Odin tasks cannot run.'
+# LAB_gatewayRequest payload: a lab-defined "run task" code, then the task name's CRC-32.
+TASK_REQUEST = 0x31
 
 
 def log(*parts):
@@ -87,9 +102,30 @@ def ws_read(stream):
 
 
 # ---------------------------------------------------------------- engine
+def task_frame(task: str) -> dict:
+    data = bytes([TASK_REQUEST]) + binascii.crc32(task.encode()).to_bytes(4, 'big') + bytes(3)
+    return {'channel': 'party', 'id': '0x641', 'data': data.hex()}
+
+
+def gateway_outcome(send, task: str) -> tuple[str, str]:
+    """(exit reason, message) for a task offered to the lab gateway through `send`."""
+    try:
+        decision = send({'action': 'send', 'origin': 'ethernet', 'frame': task_frame(task)})
+    except (RuntimeError, OSError, ValueError) as exc:
+        if 'not running' in str(exc):
+            return 'NO_VEHICLE', NO_VEHICLE + ' Start the CAN service to route tasks through the lab gateway.'
+        return 'GATEWAY_UNAVAILABLE', f'Infotainment Lab: the lab gateway did not answer ({exc}).'
+    if not decision.get('allowed'):
+        return 'GATEWAY_REFUSED', (f"Infotainment Lab: the lab gateway refused the request: {decision.get('reason')}. "
+                                   'Unlock it under CAN & gateway and stay in Service Mode.')
+    return 'NO_ECU', ('Infotainment Lab: the request crossed the lab gateway onto the party channel, '
+                      'but no vehicle ECU is attached to answer it.')
+
+
 class Engine:
-    def __init__(self, odin: Path):
+    def __init__(self, odin: Path, gateway=None):
         self.odin = odin
+        self.gateway = gateway  # send(request) to the lab CAN service, or None
         self.tasks = json.loads((odin / 'odin_bundle/odin_bundle/networks/task_data.py').read_text())
         self.clients = {}  # socket -> send lock
         self.lock = threading.Lock()
@@ -131,10 +167,10 @@ class Engine:
     def finish(self, request_id, response):
         self.broadcast({'message_type': 'request_finished', 'request_id': request_id, 'response': response})
 
-    def no_vehicle(self, request_id, reason='NO_VEHICLE'):
+    def no_vehicle(self, request_id, reason='NO_VEHICLE', message=NO_VEHICLE):
         # Exit code 2 is what the panel's result dialog shows as "Routine Error", with this message.
         # (service-ui does not forward request_failed to the page, so errors are finished requests too.)
-        output = {'exit_code': 2, 'exit_reason': reason, 'user_facing_msg': NO_VEHICLE, 'data': []}
+        output = {'exit_code': 2, 'exit_reason': reason, 'user_facing_msg': message, 'data': []}
         self.finish(request_id, {'exit_code': 2, 'service_output': output})
 
     def later(self, action, *args):
@@ -149,8 +185,16 @@ class Engine:
 
     def execute(self, task, params, request_id, locale):
         log('execute', task, request_id, params[:200])
-        self.later(self.no_vehicle, request_id)
+        self.later(self.run, task, request_id)
         return True
+
+    def run(self, task, request_id):
+        if self.gateway is None:
+            self.no_vehicle(request_id)
+            return
+        reason, message = gateway_outcome(self.gateway, task)
+        log('gateway', task, reason)
+        self.no_vehicle(request_id, reason, message)
 
     # -- websocket commands
     def command(self, message: dict):
@@ -216,10 +260,74 @@ class Engine:
             threading.Thread(target=self.serve_client, args=(sock,), daemon=True).start()
 
 
-def dbus_service(engine: Engine):
-    """com.tesla.Odin on the session's private bus (the lab's system bus)."""
+# ---------------------------------------------------------------- com.tesla.Debug
+def set_if(read, write, name, value, if_it_matches, unless_it_matches):
+    """QtCarServer's guarded write: an empty guard is ignored, a failed one skips the write."""
+    if if_it_matches or unless_it_matches:
+        ok, current = read(name)
+        current = current if ok else ''
+        if (if_it_matches and current != if_it_matches) or (unless_it_matches and current == unless_it_matches):
+            return False
+    return write(name, value)
+
+
+def dump(read, names, fmt, show_invalid):
+    """(mime type, body): name=value lines, or a JSON object when fmt is 'json'."""
+    values = {}
+    for name in names:
+        ok, value = read(name)
+        valid = ok and value not in ('', '<invalid>')
+        if valid or show_invalid:
+            values[name] = value if valid else '<invalid>'
+    if fmt == 'json':
+        return 'application/json', json.dumps(values, indent=1, sort_keys=True)
+    return 'text/plain', ''.join(f'{name}={value}\n' for name, value in sorted(values.items()))
+
+
+def dbus_service(engine: Engine, state: Path):
+    """com.tesla.Odin and com.tesla.Debug on the session's private bus (the lab's system bus)."""
     import dbus
     import dbus.service
+
+    def values(service):
+        return dbus.Interface(dbus.SessionBus().get_object(service, '/LocalDataValue', introspect=False),
+                              'com.tesla.LocalDataValue')
+
+    def reader(service):
+        def read(name):
+            ok, value = values(service).DataGetValueRequest(name, timeout=1)
+            return bool(ok), str(value)
+        return read
+
+    def write(name, text):
+        value = decode_value(text)
+        variant = (dbus.Boolean(value, variant_level=1) if isinstance(value, bool)
+                   else dbus.Double(value, variant_level=1) if isinstance(value, float)
+                   else dbus.String(text, variant_level=1))
+        return bool(values('com.tesla.CenterDisplay').DataSetValueRequest(name, variant, timeout=1))
+
+    class Debug(dbus.service.Object):
+        # Single values go to the center display, so a write reaches the lab's model
+        # exactly as a touch there does (keep-awake follows the display).
+        @dbus.service.method('com.tesla.Debug', in_signature='s', out_signature='bs')
+        def get_data_value(self, name):
+            return reader('com.tesla.CenterDisplay')(str(name))
+
+        # The full listing is read from QtCarDvServer's store: ~3k reads would hold
+        # the center's GUI thread for seconds. No metadata is available here.
+        @dbus.service.method('com.tesla.Debug', in_signature='sbb', out_signature='ss')
+        def get_data_values(self, fmt, show_invalid, show_metadata):
+            try:
+                names = json.loads((state / 'display-request-names.json').read_text())['known']
+            except (OSError, ValueError, KeyError):
+                names = []
+            return dump(reader('com.tesla.DvServer'), names, str(fmt), bool(show_invalid))
+
+        @dbus.service.method('com.tesla.Debug', in_signature='ssss', out_signature='b')
+        def set_data_value(self, name, value, if_it_matches, unless_it_matches):
+            log('debug set', name, value)
+            return set_if(reader('com.tesla.CenterDisplay'), write, str(name), str(value),
+                          str(if_it_matches), str(unless_it_matches))
 
     class Odin(dbus.service.Object):
         @dbus.service.method('com.tesla.Odin', in_signature='', out_signature='a{ss}')
@@ -235,16 +343,19 @@ def dbus_service(engine: Engine):
             return engine.execute(str(task), str(params), str(request_id), str(locale))
 
     bus = dbus.SessionBus()
-    name = dbus.service.BusName('com.tesla.Odin', bus, do_not_queue=True)
-    return name, Odin(bus, '/Odin')
+    names = [dbus.service.BusName(name, bus, do_not_queue=True) for name in ('com.tesla.Odin', 'com.tesla.Debug')]
+    return names, Odin(bus, '/Odin'), Debug(bus, '/Debug')
 
 
 def main(args):
     from dbus.mainloop.glib import DBusGMainLoop
     from gi.repository import GLib
-    engine = Engine(Path(args[1]))
+    import can_service
+
+    state = Path(args[0]).parent  # the session directory, where the CAN service listens
+    engine = Engine(Path(args[1]), lambda request: can_service.request(state, request, timeout=2))
     DBusGMainLoop(set_as_default=True)
-    service = dbus_service(engine)  # noqa: F841 - keeps the name owned
+    service = dbus_service(engine, state)  # noqa: F841 - keeps the names owned
     threading.Thread(target=engine.listen, args=(Path(args[0]),), daemon=True).start()
     log(f'Odin engine stand-in: {len(engine.tasks)} tasks, listening on {args[0]}')
     GLib.MainLoop().run()

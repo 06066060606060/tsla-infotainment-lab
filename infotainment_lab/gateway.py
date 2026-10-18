@@ -29,10 +29,9 @@ import threading
 import time
 
 import can_database
-from can_bus import Filter, open_bus
+from can_bus import CAN_EFF_MASK, CAN_SFF_MASK, Filter, open_bus
 from can_frames import Frame
 
-WIRE = 12  # channel byte, 4-byte identifier, length byte, up to 8 data bytes... see pack_wire.
 DEFAULT_ENDPOINT = ("127.0.0.1", 20200)
 UNLOCK_TTL_S = 300
 RATE_LIMIT_PER_S = 400
@@ -66,6 +65,7 @@ class Route:
     destination: str
     filters: tuple[Filter, ...] = ()
     requires_unlock: bool = False
+    requires_service_mode: bool = False
     description: str = ""
 
     def accepts(self, frame: Frame) -> bool:
@@ -76,22 +76,55 @@ def allow(*identifiers: int, mask: int = 0x7FF) -> tuple[Filter, ...]:
     return tuple(Filter(identifier, mask) for identifier in identifiers)
 
 
+# Senders that stand for the infotainment side in the public databases.
+INFOTAINMENT_SENDERS = {"eth", "mcu", "cid", "ui", "uis", "ic"}
+
+
+def _exact(messages) -> tuple[Filter, ...]:
+    return tuple(Filter(m.identifier, CAN_EFF_MASK if m.extended else CAN_SFF_MASK, m.extended)
+                 for m in sorted(messages, key=lambda m: (m.extended, m.identifier)))
+
+
+def database_routes(messages, channels) -> tuple[Route, ...]:
+    """Routes for a loaded bus profile.
+
+    Every defined frame on a channel may be read from the Ethernet side. The
+    frames the infotainment itself sends (by sender, or a UI_/MCU_ name) may be
+    written to their channel, and only while the gateway is unlocked.
+    """
+    routes = []
+    for channel in channels:
+        own = [m for m in messages if m.channel == channel]
+        if not own:
+            continue
+        routes.append(Route(f"{channel}-to-eth", channel, "eth", _exact(own),
+                            description=f"Every defined {channel} frame to the infotainment session."))
+        writes = [m for m in own if m.name.startswith(("UI_", "MCU_"))
+                  or INFOTAINMENT_SENDERS & {s.strip().lower() for s in m.sender.split(",")}]
+        if writes:
+            routes.append(Route(f"eth-to-{channel}", "eth", channel, _exact(writes), requires_unlock=True,
+                                description=f"Infotainment frames onto {channel}."))
+    return tuple(routes)
+
+
 # Read paths are open; anything that reaches a vehicle channel is gated.
 DEFAULT_ROUTES: tuple[Route, ...] = (
     Route("veh-drive-to-eth", "veh", "eth", allow(0x118, 0x129),
           description="Drive state and steering to the infotainment session."),
-    Route("veh-to-eth", "veh", "eth", allow(0x102, 0x2E5, 0x3D8, 0x3F5),
-          description="Closures, climate, tyres and lighting to the display."),
+    Route("veh-to-eth", "veh", "eth", allow(0x102, 0x2E5, 0x3D8, 0x3F5, 0x5E1),
+          description="Closures, climate, tyres, lighting and vehicle modes to the display."),
     Route("ch-to-eth", "ch", "eth", allow(0x352),
           description="Energy and charging status to the display."),
     Route("eth-to-veh", "eth", "veh", allow(0x2E5, 0x3F5), requires_unlock=True,
           description="Climate and lighting requests from the display."),
-    Route("eth-to-party", "eth", "party", allow(0x641), requires_unlock=True,
-          description="Diagnostic requests on the isolated channel."),
+    # Diagnostic requests need both an unlocked gateway and Service Mode on,
+    # the session state the displays show (GUI_serviceMode).
+    Route("eth-to-party", "eth", "party", allow(0x641), requires_unlock=True, requires_service_mode=True,
+          description="Diagnostic requests on the isolated channel, in Service Mode only."),
     Route("party-to-eth", "party", "eth", allow(0x651),
           description="Diagnostic responses back to the requester."),
     Route("veh-to-ch", "veh", "ch", allow(0x3F5),
-          description="Lighting state mirrored onto the powertrain channel."),
+          description="Lighting state mirrored onto the chassis channel."),
 )
 
 
@@ -117,6 +150,8 @@ class SecurityGateway:
         self.secret = secret if secret is not None else os.environ.get("LAB_GATEWAY_SECRET", "infotainment-lab").encode()
         self.table = can_database.index(messages) if messages is not None else dict(can_database.BY_ID)
         self.unlock_ttl_s = unlock_ttl_s
+        # Set by the service from the session state; the displays own it.
+        self.service_mode = False
         self.channels = tuple(self.bus.channels)
         self.to_ethernet: list[Frame] = []
         self.rejected: list[Decision] = []
@@ -190,7 +225,9 @@ class SecurityGateway:
                     continue
                 if route.requires_unlock and not self.unlocked:
                     return self._record(Decision(frame, route.name, False, "the gateway session is locked"))
-                definition = self.table.get((frame.channel, frame.identifier))
+                if route.requires_service_mode and not self.service_mode:
+                    return self._record(Decision(frame, route.name, False, "Service Mode is off"))
+                definition = can_database.lookup(frame.channel, frame.identifier, self.table, frame.extended)
                 if definition and not definition.checksum_valid(frame):
                     return self._record(Decision(frame, route.name, False, "frame checksum is invalid"))
                 self.bus.send(frame)
@@ -200,10 +237,14 @@ class SecurityGateway:
 
     def _on_bus_frame(self, frame: Frame, origin: str = "send") -> None:
         """Forward a channel frame to the Ethernet queue and any channel mirror."""
+        to_ethernet = False
         for route in self.routes_from(frame.channel):
             if not route.accepts(frame):
                 continue
             if route.destination == "eth":
+                if to_ethernet:
+                    continue  # Several read routes may cover one frame; deliver it once.
+                to_ethernet = True
                 with self._lock:
                     self.to_ethernet.append(frame)
                     del self.to_ethernet[:-2048]
@@ -220,7 +261,7 @@ class SecurityGateway:
         return frames
 
     def decode(self, frame: Frame) -> dict:
-        definition = self.table.get((frame.channel, frame.identifier))
+        definition = can_database.lookup(frame.channel, frame.identifier, self.table, frame.extended)
         if not definition:
             return {}
         return definition.decode(frame)
@@ -228,10 +269,14 @@ class SecurityGateway:
     def status(self) -> dict:
         return {"backend": self.bus.backend, "unlocked": self.unlocked,
                 "unlock_expires_in_s": max(0, round(self._unlocked_until - time.time())),
+                "unlock_expires_at": self._unlocked_until if self.unlocked else 0.0,
+                "service_mode": self.service_mode,
                 "channels": [self.bus.channel(name).stats() for name in self.channels],
                 "routes": [{"name": r.name, "source": r.source, "destination": r.destination,
-                            "identifiers": [f"0x{f.identifier:03X}" for f in r.filters],
-                            "requires_unlock": r.requires_unlock, "description": r.description}
+                            "identifiers": [f"0x{f.identifier:03X}" for f in r.filters[:64]],
+                            "identifier_count": len(r.filters),
+                            "requires_unlock": r.requires_unlock,
+                            "requires_service_mode": r.requires_service_mode, "description": r.description}
                            for r in self.routes],
                 "counters": dict(self.counts),
                 "pending_to_ethernet": len(self.to_ethernet),

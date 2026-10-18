@@ -112,13 +112,23 @@ def media_webapp_arguments(firmware: Path, version: str, usage: str = '', *, car
     return argv, dropped
 
 
-def odin_browser_arguments(firmware: Path, state: Path) -> list[str]:
+def odin_scale_factor(display_scale: float = 1.0) -> str:
+    """Chromium zoom for the Service panel at a display scale (see display_scale.py).
+
+    native-browser-input.c divides the card size QtCar asks for by the firmware's
+    window scale, so a larger display scale gives the page fewer CSS pixels and its
+    layout wraps. Dividing the zoom by the same factor keeps the layout that 1.25
+    gives at the lab's default scale."""
+    return '%g' % round(1.25 / (display_scale if 1 <= display_scale <= 4 else 1.0), 3)
+
+
+def odin_browser_arguments(firmware: Path, state: Path, display_scale: float = 1.0) -> list[str]:
     """The Service Mode panel's browser, mirroring the firmware's chromium-odin service.
 
     QtCar embeds the ChromiumOdin window in its Service card; the page is served by
     the firmware's own service-ui backend on localhost:8000."""
     return [str(firmware / 'usr/lib/tesla-chromium/tesla-chromium-main'),
-            '--ozone-platform=x11', '--force-device-scale-factor=1.25', '--disable-setuid-sandbox',
+            '--ozone-platform=x11', f'--force-device-scale-factor={odin_scale_factor(display_scale)}', '--disable-setuid-sandbox',
             '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-notifications',
             '--disable-crashpad-for-testing', '--disable-breakpad', '--disable-crash-reporter',
             '--in-process-gpu', '--use-angle=gl', '--ignore-gpu-blocklist', '--disable-accelerated-video-decode',

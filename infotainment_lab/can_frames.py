@@ -24,6 +24,11 @@ def crc8(data: bytes, poly: int = 0x2F, init: int = 0xFF, xorout: int = 0xFF) ->
     return crc ^ xorout
 
 
+def tesla_sum(identifier: int, body: bytes) -> int:
+    """Additive checksum used by the public opendbc Tesla definitions."""
+    return (identifier + (identifier >> 8) + sum(body)) & 0xFF
+
+
 @dataclass(frozen=True)
 class Frame:
     """One CAN 2.0 frame on one named channel."""
@@ -107,23 +112,22 @@ class Signal:
     little_endian: bool = True
     unit: str = ""
     choices: tuple[str, ...] = ()
+    mux: int = -1  # Multiplexed signal: present only when the multiplexer holds this value.
+    initial: float | str | None = None  # Idle value a database declares, used when nothing is bound.
 
     def decode(self, data: bytes) -> float | str:
         raw = _extract(data, self.start_bit, self.bit_length, self.little_endian)
         if self.signed and raw >> (self.bit_length - 1):
             raw -= 1 << self.bit_length
-        if self.choices:
-            return self.choices[raw] if raw < len(self.choices) else f"reserved:{raw}"
+        if 0 <= raw < len(self.choices) and self.choices[raw]:
+            return self.choices[raw]  # A named value; unnamed ones stay numeric.
         return raw * self.scale + self.offset
 
     def encode_into(self, buffer: bytearray, value) -> None:
-        if self.choices:
-            if isinstance(value, str):
-                if value not in self.choices:
-                    raise ValueError(f"{self.name} has no state named {value!r}.")
-                raw = self.choices.index(value)
-            else:
-                raw = int(value)
+        if isinstance(value, str):
+            if not value or value not in self.choices:
+                raise ValueError(f"{self.name} has no state named {value!r}.")
+            raw = self.choices.index(value)
         else:
             raw = round((float(value) - self.offset) / self.scale)
         span = 1 << self.bit_length
@@ -197,22 +201,45 @@ class Message:
     checksum: str = ""
     checksum_start: int = 0
     extended: bool = False
+    checksum_kind: str = "crc8"  # crc8 (lab frames) or tesla (opendbc definitions)
+    multiplexer: str = ""
+    sender: str = ""
+
+    @property
+    def mux_values(self) -> tuple[int, ...]:
+        return tuple(sorted({s.mux for s in self.signals if s.mux >= 0}))
+
+    def _active(self, mux_value) -> tuple[Signal, ...]:
+        return tuple(s for s in self.signals if s.mux < 0 or s.mux == mux_value)
+
+    def _checksum(self, data: bytes, index: int) -> int:
+        body = bytes(b for position, b in enumerate(data) if position != index)
+        if self.checksum_kind == "tesla":
+            return tesla_sum(self.identifier, body)
+        return crc8(bytes([self.identifier & 0xFF]) + body)
 
     def encode(self, values: dict, counter: int = 0) -> Frame:
         buffer = bytearray(self.length)
-        for signal in self.signals:
+        mux_value = None
+        if self.multiplexer:
+            mux_value = int(values.get(self.multiplexer, (self.mux_values or (0,))[0]))
+            values = dict(values, **{self.multiplexer: mux_value})
+        for signal in self._active(mux_value):
             if signal.name in values:
                 signal.encode_into(buffer, values[signal.name])
         if self.counter:
-            self.signal(self.counter).encode_into(buffer, counter & 0x0F)
+            slot = self.signal(self.counter)
+            slot.encode_into(buffer, counter & ((1 << slot.bit_length) - 1))
         if self.checksum:
             slot = self.signal(self.checksum)
-            body = bytes(b for index, b in enumerate(buffer) if index != slot.start_bit // 8)
-            slot.encode_into(buffer, crc8(bytes([self.identifier & 0xFF]) + body))
+            slot.encode_into(buffer, self._checksum(buffer, slot.start_bit // 8))
         return Frame(self.identifier, bytes(buffer), self.channel, self.extended)
 
     def decode(self, frame: Frame) -> dict:
-        return {signal.name: signal.decode(frame.data) for signal in self.signals}
+        mux_value = None
+        if self.multiplexer:
+            mux_value = self.signal(self.multiplexer).decode(frame.data)
+        return {signal.name: signal.decode(frame.data) for signal in self._active(mux_value)}
 
     def signal(self, name: str) -> Signal:
         for signal in self.signals:
@@ -223,7 +250,5 @@ class Message:
     def checksum_valid(self, frame: Frame) -> bool:
         if not self.checksum:
             return True
-        slot = self.signal(self.checksum)
-        index = slot.start_bit // 8
-        body = bytes(b for position, b in enumerate(frame.data) if position != index)
-        return frame.data[index] == crc8(bytes([self.identifier & 0xFF]) + body)
+        index = self.signal(self.checksum).start_bit // 8
+        return index < len(frame.data) and frame.data[index] == self._checksum(frame.data, index)

@@ -68,3 +68,18 @@ Changing them requires restarting WSL and affects every WSL 2 distribution.
 Keep the previous configuration for rollback and obtain a suitable interruption
 window before applying. See [Microsoft's WSL configuration documentation](https://learn.microsoft.com/en-us/windows/wsl/wsl-config).
 
+
+## Sign-in through Tesla
+
+In a Tesla browser, the media web app requests Spotify's QR-code login from a
+Tesla vehicle service rather than from Spotify, and that service is only
+reachable from a car. The lab never resolves Tesla's names, so the request
+fails and the login page shows "Connection failed. Check your internet
+connection." `center.log` records the blocked lookup.
+
+The same service is used for Apple Music, Apple Podcasts, TuneIn, SiriusXM and
+the Chinese sources. Amazon Music and Audible sign in directly with their
+provider, so their login pages load.
+
+The lab does not provide an alternative, so Spotify, Apple Music and Apple
+Podcasts login stay unavailable.

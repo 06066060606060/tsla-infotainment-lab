@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import errno
 import io
 import importlib.util
@@ -29,6 +30,8 @@ from browser import MODES, browser_url, media_health
 from replay import replay_request, manual_takeover, controls_lock
 import config_csv
 import display_scale
+import market
+import vehicle_options
 import firmware_files
 import debug_logs
 from vehicle_services import VehicleServices, CAPABILITIES
@@ -208,12 +211,13 @@ def firmware_replacements(identifier, operation='list', target=None, filename=No
         return {'id': identifier, 'files': values}
 
 
-def firmware_view(item, root):
+def firmware_view(item, root, single_display=False):
     upper = firmware_files.tree(DATA, item['id'])
     mount = firmware_files.private_directory(DATA / 'views') / safe_id(item['id'])
     if not release_mount(mount):
         raise RuntimeError('The previous replacement view could not be released.')
-    return firmware_files.mount_view(root, upper, mount, run)
+    layer = firmware_files.layout_layer(root, DATA / 'layout' / safe_id(item['id'])) if single_display else None
+    return firmware_files.mount_view(root, upper, mount, run, [layer])
 
 
 def verify_builds(root: Path, profile: dict):
@@ -246,10 +250,13 @@ def status() -> dict:
     record["controls"] = load_json(DATA / "session/controls-feedback.json", {})
     record['replay'] = load_json(DATA / 'session/replay-status.json', {})
     record['vehicle_services'] = load_json(DATA / 'session/vehicle-services-feedback.json', {})
+    record['alerts'] = sorted(load_json(DATA / 'session/vehicle-alerts.json', {}))
     record['config_values'] = dict(load_json(DATA / 'session/config-values-feedback.json', {}),
                                    conflicts=load_json(DATA / 'session/config-conflicts.json', []),
                                    restarts=load_json(DATA / 'session/config-restarts.json', []),
                                    car_config=load_json(DATA / 'session/car-config-learned.json', []))
+    record['market'] = market.current(load_json(DATA / 'session/config-values.json', {}))
+    record['vehicle'] = vehicle_options.current(load_json(DATA / 'session/config-values.json', {}))
     record['service_capabilities'] = CAPABILITIES
     try:
         with (DATA / 'session/center.log').open('rb') as source:
@@ -307,7 +314,7 @@ def _start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
         raise ValueError("This firmware has been identified but has no tested launch profile yet.")
     root = mounted_image(item)
     verify_builds(root, profile)
-    root = firmware_view(item, root)
+    root = firmware_view(item, root, bool(profile.get('single_display')))
     if profile.get("single_display"):
         cluster = False
     if profile.get("experimental") and browser:
@@ -342,6 +349,7 @@ def _start(identifier: str, map_id: str | None, browser: bool, cluster: bool):
     atomic_json(session / 'config-values-feedback.json', {})
     atomic_json(session / 'config-conflicts.json', [])
     atomic_json(session / 'config-restarts.json', [])
+    atomic_json(session / 'vehicle-alerts.json', {})
     atomic_json(session / 'camera-consumer.json', {})
     atomic_json(session / 'camera-status.json', {'phase': 'starting'})
     atomic_json(session / "status.json", {"phase": "starting", "profile": profile["id"], "components": {}})
@@ -406,6 +414,41 @@ def set_vehicle_services(payload):
     return result
 
 
+MAX_ALERTS = 100
+ALERT_NAME = re.compile(r'[A-Z][A-Z0-9]{1,15}_[a-z][0-9]{3}(_[A-Za-z0-9_]{1,64})?')  # e.g. BMS_w001_HW_Over_Current
+
+
+def image_alert_names():
+    """Alert names the image's QtCar defines (compiled into libQtCarAlerts), or None when it cannot be read."""
+    lib = next(iter(sorted((Path(session_config(False).get('firmware') or '/nonexistent') / 'usr/tesla/UI/lib')
+                           .glob('libQtCarAlerts.so*'))), None)
+    try:
+        data = lib.read_bytes() if lib else None
+    except OSError:
+        return None
+    return data and {m.decode() for m in re.findall(rb'(?<![A-Za-z0-9_])[A-Z][A-Z0-9]{1,15}_[a-z][0-9]{3}_[A-Za-z0-9_]{1,64}', data)}
+
+
+def set_vehicle_alerts(payload):
+    """Raise or clear alerts by name; runtime/alertd.py serves them to the Service Mode panel."""
+    path = DATA / 'session/vehicle-alerts.json'
+    alerts = {} if payload.get('clear_all') else load_json(path, {})
+    for name in payload.get('clear', []):
+        alerts.pop(str(name), None)
+    known = image_alert_names() if payload.get('set') else None
+    for name in payload.get('set', []):
+        if not ALERT_NAME.fullmatch(str(name)):
+            raise ValueError(f'{str(name)[:80]} is not an alert name (for example BMS_w001_HW_Over_Current).')
+        if known and name not in known:
+            # QtCar lists an alert it does not define as a blank row.
+            raise ValueError(f'{name} is not defined by this firmware image; use its full name, for example BMS_w001_HW_Over_Current.')
+        alerts.setdefault(name, time.time())
+    if len(alerts) > MAX_ALERTS:
+        raise ValueError(f'At most {MAX_ALERTS} alerts can be active.')
+    atomic_json(path, alerts)
+    return sorted(alerts)
+
+
 MAX_CONFIG_VALUE = 65536  # some settings are base64 blobs of a few KB (GUI_homePlaceHistoryItem is 2.3 KB)
 
 
@@ -419,7 +462,9 @@ def set_config_values(payload):
     values = load_json(path, {})
     explicit_path = DATA / 'session/config-explicit.json'
     explicit = set(load_json(explicit_path, []))
-    refused = config_csv.unsupported_car(payload.get('values', {}), load_json(DATA / 'session/config.json', {}).get('single_display'))
+    # The GUI knows the selected device's layout; the last session's config is only a fallback.
+    single = payload.get('single_display', load_json(DATA / 'session/config.json', {}).get('single_display'))
+    refused = config_csv.unsupported_car(payload.get('values', {}), bool(single))
     if refused:
         raise ValueError(refused)
     rejected = []
@@ -429,7 +474,7 @@ def set_config_values(payload):
     for name, value in payload.get('values', {}).items():
         if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,127}', str(name)) or config_csv.private(str(name)):
             rejected.append(str(name)[:60])
-        elif isinstance(value, bool) or isinstance(value, (int, float)) or (isinstance(value, str) and len(value) <= MAX_CONFIG_VALUE):
+        elif isinstance(value, bool) or isinstance(value, (int, float)) or (isinstance(value, str) and len(value) <= MAX_CONFIG_VALUE and '\x00' not in value):
             values[name] = value
             (explicit.add if name in payload.get('explicit', []) else explicit.discard)(name)
         else:
@@ -445,14 +490,23 @@ def can_service_state() -> Path:
     return path
 
 
-def can_start(backend_choice='auto', create=False, port=20200, restart=False):
-    """Start the CAN and gateway service as an ordinary user process."""
+def can_start(backend_choice='auto', create=False, port=20200, restart=False, profile='lab'):
+    """Start the CAN and gateway service as an ordinary user process.
+
+    A profile other than lab first downloads its public signal databases, at a
+    pinned commit, into the data directory (never into the repository).
+    """
+    import can_profiles
     import can_service
 
+    can_profiles.profile(profile)
+    databases = DATA / 'can-databases'
+    can_profiles.fetch(profile, databases)
     state = can_service_state()
     if can_service.running(state):
         status = can_service.request(state, {'action': 'status'})
-        if status.get('revision') == can_service.SERVICE_REVISION and not restart:
+        if (status.get('revision') == can_service.SERVICE_REVISION and status.get('profile', 'lab') == profile
+                and not restart):
             return dict(status, already_running=True)
         # A service started before an update keeps running its old code, so the
         # panel would report stale behaviour. Replace it.
@@ -467,11 +521,14 @@ def can_start(backend_choice='auto', create=False, port=20200, restart=False):
         else:
             raise RuntimeError('The previous CAN service did not stop. End that process, then start again.')
     log = (state / 'can-gateway.log').open('a')
+    # Its own session: the service outlives the panel call that started it, which
+    # would otherwise take it down when the launcher's terminal or process group ends.
     process = subprocess.Popen([sys.executable, str(PACKAGE / 'can_service.py'), '--state', str(state),
                                '--backend', backend_choice, '--bridge-port', str(int(port)),
+                               '--profile', profile, '--databases', str(databases),
                                *(['--create-interfaces'] if create else [])],
                               stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                              cwd=str(PACKAGE))
+                              cwd=str(PACKAGE), start_new_session=True)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -488,6 +545,18 @@ def can_call(payload):
 
     if not isinstance(payload, dict):
         raise ValueError('CAN requests must be an object.')
+    if payload.get('action') == 'unlock' and 'secret' in payload:
+        # The whole handshake in one call: the secret never leaves this
+        # process, and the panel no longer depends on two round trips.
+        import hashlib
+        import hmac
+
+        secret = payload['secret']
+        if not isinstance(secret, str) or not secret:
+            raise ValueError('Enter the gateway lab secret.')
+        challenge = can_service.request(can_service_state(), {'action': 'challenge'})['challenge']
+        response = hmac.new(secret.encode(), bytes.fromhex(challenge), hashlib.sha256).hexdigest()[:32]
+        return can_service.request(can_service_state(), {'action': 'unlock', 'response': response})
     if payload.get('action') == 'os-trace':
         import native_traffic
         return dict(native_traffic.snapshot(can_service_state()), observation=True)
@@ -510,9 +579,12 @@ def can_status():
     return can_service.request(state, {'action': 'status'})
 
 
-def can_setup(names=('vcan0', 'vcan1', 'vcan2')):
+def can_setup(names=None):
     """Create the virtual CAN interfaces once. This is the only privileged step."""
     from can_bus import create_vcan, vcan_supported
+    from can_profiles import MAX_CHANNELS
+
+    names = names or tuple(f'vcan{index}' for index in range(MAX_CHANNELS))
 
     if os.geteuid() != 0:
         raise RuntimeError('Creating virtual CAN interfaces needs an administrator. The service itself runs without root.')
@@ -650,7 +722,7 @@ def factory_reset():
     if held:
         raise RuntimeError("The firmware image could not be unmounted (fusermount3 refused it), so nothing was deleted. "
                            f"Run `fusermount3 -uz {held[0]}` or restart WSL, then try Full reset again.")
-    for name in ("session", "engine", "views", "mounts", "replacements"):
+    for name in ("session", "engine", "views", "mounts", "replacements", "layout"):
         target = DATA / name
         if target.is_symlink():
             target.unlink()
@@ -704,15 +776,16 @@ def setup(uid: int):
     return {"installed": True, "media_profiles": "installed"}
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "logs", "debug", "firmware-files", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "config-values", "browser", "steering", "can", "can-start", "can-status", "can-setup", "factory-reset", "qemu-check", "ssh-key", "qemu-start", "qemu-status", "qemu-stop"))
+    parser.add_argument("action", choices=("probe", "import", "start", "stop", "status", "setup", "report", "debug", "firmware-files", "controls", "preview", "capture", "focus", "restart", "camera", "camera-preview", "replay", "vehicle-services", "vehicle-alerts", "config-values", "browser", "steering", "can", "can-start", "can-status", "can-setup", "factory-reset", "qemu-check", "ssh-key", "qemu-start", "qemu-status", "qemu-stop"))
     parser.add_argument('--button')
     parser.add_argument('--target')
     parser.add_argument('--replacement-operation', choices=('list', 'put', 'remove'), default='list')
     parser.add_argument('--can-backend', choices=('auto', 'socketcan', 'software'), default='auto')
     parser.add_argument('--bridge-port', type=int, default=20200)
     parser.add_argument('--create-interfaces', action='store_true')
+    parser.add_argument('--can-profile', default='lab')
     parser.add_argument('--engine', choices=('native', 'qemu'), default='native')
     parser.add_argument('--vm-directory')
     parser.add_argument('--source', choices=('pattern', 'video', 'raw', 'off', 'replay'), default='pattern')
@@ -728,7 +801,7 @@ def main():
     parser.add_argument("--no-cluster", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--internet", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.action == 'ssh-key' and args.engine != 'qemu':
             raise ValueError('The SSH console needs the virtual-hardware (QEMU) engine.')
@@ -769,6 +842,7 @@ def main():
         elif args.action == 'camera-preview': result = camera_preview()
         elif args.action == 'replay': result = set_replay(json.loads(args.payload))
         elif args.action == 'vehicle-services': result = set_vehicle_services(json.loads(args.payload))
+        elif args.action == 'vehicle-alerts': result = set_vehicle_alerts(json.loads(args.payload))
         elif args.action == 'config-values': result = set_config_values(json.loads(args.payload))
         elif args.action == 'browser': result = open_browser(args.mode, args.url)
         elif args.action == 'steering': result = steering_button(args.button)
@@ -778,7 +852,7 @@ def main():
                 payload['path'] = args.path
             result = can_call(payload)
         elif args.action == 'can-start':
-            result = can_start(args.can_backend, args.create_interfaces, args.bridge_port)
+            result = can_start(args.can_backend, args.create_interfaces, args.bridge_port, profile=args.can_profile)
         elif args.action == 'can-status': result = can_status()
         elif args.action == 'can-setup': result = can_setup()
         elif args.action in ('preview', 'capture'): result = capture_displays(args.action == 'preview')
@@ -788,13 +862,30 @@ def main():
             result = Simulation.parse(json.loads(args.payload)).as_dict()
             publish_can_state(simulation=result)
             result = manual_takeover(DATA / 'session', result)
-        else:
-            result = {"logs": {p.name: p.read_text(errors="replace")[-12000:] for p in (DATA / "session").glob("*.log") if p.stat().st_size < 100_000_000}}
         print(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         raise SystemExit(1)
 
 
+def serve():
+    """Answer one JSON argv per stdin line with one JSON line, so the GUI skips the interpreter start and imports per call."""
+    requests, replies = os.fdopen(os.dup(0), encoding='utf-8'), os.fdopen(os.dup(1), 'w', encoding='utf-8')
+    for fd in (0, 1):  # children must not read requests or write into the reply stream
+        os.dup2(os.open(os.devnull, os.O_RDWR), fd)
+    for line in requests:
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                main(json.loads(line))
+        except SystemExit:
+            pass
+        except Exception as exc:
+            out.write(json.dumps({"ok": False, "error": str(exc)}))
+        lines = out.getvalue().strip().splitlines()
+        replies.write((lines[-1] if lines else json.dumps({"ok": False, "error": "The backend returned no output."})) + "\n")
+        replies.flush()
+
+
 if __name__ == "__main__":
-    main()
+    serve() if sys.argv[1:] == ["serve"] else main()

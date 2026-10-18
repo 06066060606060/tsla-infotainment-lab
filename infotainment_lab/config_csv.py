@@ -11,7 +11,11 @@ INVALID = '@invalid'
 # battery, radio…); writing it makes the simulated hardware misbehave, so it is listed but not sent.
 SETTING_PREFIXES = ('FEATURE', 'GUI', 'VAPI', 'APP', 'APTRIAL', 'GTW', 'OPTION', 'AUTONAVDEBUG')
 # Watched by the firmware but not in the vehicle profile: seen restarting it (the supervisor learns more).
-CAR_CONFIG_EXTRA = frozenset({'VAPI_packConfig', 'VAPI_tpmsType', 'VAPI_restraintControlsType', 'GUI_navigationEngine', 'VAPI_carVersionString'})
+# GTW_dasHw has no default: a value the imported car lacks makes the firmware re-derive its Autopilot features.
+# The market switch's keys (market.py) are here too, so a fresh start applies them without relying on the learned list.
+CAR_CONFIG_EXTRA = frozenset({'VAPI_packConfig', 'VAPI_tpmsType', 'VAPI_restraintControlsType', 'GUI_navigationEngine', 'GTW_dasHw',
+                              'GUI_applyEceR79', 'GUI_distanceUnits', 'GUI_temperatureUnits', 'GUI_tirePressureUnits',
+                              'GUI_language', 'GUI_locale', 'GUI_manualLanguage', 'VAPI_carVersionString'})
 
 # These opt-in display simulation inputs can be replaced by firmware service
 # defaults after startup. Recheck explicit overrides without replaying commands
@@ -52,8 +56,8 @@ def live(name):
 
 def unsupported_car(values, single_display):
     """Why these values cannot be used on this layout, or ''. The S/X layout has no Model 3 interface."""
-    if str(values.get('VAPI_carType')) == 'Model3' and not single_display:
-        return 'This is a Model 3 configuration. This firmware image has only the Model S/X interface, so it cannot be imported.'
+    if str(values.get('VAPI_carType')) in ('Model3', 'ModelY') and not single_display:
+        return 'This is a Model 3/Y configuration. This firmware image has only the Model S/X interface, so it cannot be imported.'
     if single_display and str(values.get('VAPI_carType')) in ('ModelS', 'ModelS2', 'ModelX'):
         return 'This is a Model S/X configuration. This firmware image uses the Model 3 interface, so it cannot be imported.'
     return ''
@@ -61,10 +65,14 @@ def unsupported_car(values, single_display):
 
 PROFILE = Path(__file__).parent / 'runtime' / 'vehicle-profile-model-x-mcu2.json'
 MODEL3_PROFILE = PROFILE.with_name('vehicle-profile-model-3-mcu2.json')
+MODELY_PROFILE = PROFILE.with_name('vehicle-profile-model-y-mcu2.json')
 
 
-def profile_path(single_display=False):
-    return MODEL3_PROFILE if single_display else PROFILE
+def profile_path(single_display=False, car=None):
+    """The base vehicle profile; `car` (the saved VAPI_carType) picks Model Y on the Model 3/Y layout."""
+    if single_display:
+        return MODELY_PROFILE if car == 'ModelY' else MODEL3_PROFILE
+    return PROFILE
 
 
 @lru_cache(maxsize=2)

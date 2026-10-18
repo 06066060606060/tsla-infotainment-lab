@@ -105,7 +105,7 @@ QTableWidget { background: @container; color: @on_surface; border: 1px solid @ou
 QHeaderView::section, QTableCornerButton::section { background: @high; color: @on_surface; border: 0; padding: 6px; }
 QTableWidget::indicator { width: 18px; height: 18px; border: 1px solid @outline; border-radius: 3px; }
 QTableWidget::indicator:checked { background: @primary; }
-QTextEdit { background: @surface; border: 1px solid @outline_variant; border-radius: 16px; padding: 16px; font-family: 'Cascadia Code', 'DejaVu Sans Mono', monospace; font-size: 12px; selection-background-color: @primary_container; selection-color: @on_primary_container; }
+QTextEdit, QPlainTextEdit { background: @surface; border: 1px solid @outline_variant; border-radius: 16px; padding: 16px; font-family: 'Cascadia Code', 'DejaVu Sans Mono', monospace; font-size: 12px; selection-background-color: @primary_container; selection-color: @on_primary_container; }
 QProgressBar { border: 0; background: @secondary_container; border-radius: 2px; max-height: 4px; }
 QProgressBar::chunk { background: @primary; border-radius: 2px; }
 QSlider { min-height: 30px; }

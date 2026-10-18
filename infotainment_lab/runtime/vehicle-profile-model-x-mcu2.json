@@ -1,16 +1,15 @@
 {
-  "name": "Model 3 MCU2 modern supported profile",
-  "description": "",
+  "name": "Model X MCU2 modern supported profile",
+  "description": "Uses the newest meaningful Model X values exposed by the 2026.26.6.1 MCU2 display services.",
   "signals": {
-    "VAPI_carType": "Model3",
-    "VAPI_carVersionString": "2026.26.5",
-    "VAPI_chassisType": 3,
+    "VAPI_carType": "ModelX",
+    "VAPI_chassisType": 1,
     "VAPI_countryCode": "US",
     "VAPI_priorCountryCode": "US",
-    "VAPI_navigationMapRegion": "USCanada",
+    "VAPI_navigationMapRegion": 0,
     "VAPI_backupCameraType": 1,
     "VAPI_parkAssist": 3,
-    "VAPI_autopilot": 3,
+    "VAPI_autopilot": 1,
     "VAPI_autopilotBase": 3,
     "VAPI_autopilotConfigSource": 0,
     "GUI_autopilotConfigType": 0,
@@ -23,9 +22,9 @@
     "VAPI_exteriorColor": 10,
     "VAPI_interiorTrimType": 1,
     "VAPI_audioType": "Base",
-    "VAPI_fourWheelDrive": false,
-    "VAPI_airSuspension": 0,
-    "VAPI_driverAssist": "ParkerPascal2_5",
+    "VAPI_fourWheelDrive": true,
+    "VAPI_airSuspension": 5,
+    "VAPI_driverAssist": 4,
     "VAPI_hasHomelink": 3,
     "VAPI_hasPowerLiftgate": true,
     "VAPI_radarPosition": 2,
@@ -34,12 +33,12 @@
     "VAPI_rightHandDrive": false,
     "VAPI_europeVehicle": false,
     "GUI_navVehicleCountry": "US",
-    "GUI_carTypeFullName": "Model 3",
+    "GUI_carTypeFullName": "Model X",
     "GUI_useVisionParkAssist": false
   },
   "resolved_values": {
-    "chassis": "3",
-    "trim": "74",
+    "chassis": "X",
+    "trim": "P100D",
     "exterior_color": "Red",
     "interior_trim": "BlackAndWhite",
     "audio_type": "Base",
@@ -51,6 +50,6 @@
     "park_assist": "Valeo5",
     "radar_position": "X",
     "restraints": "MXNA2RFOLDFLAT",
-    "wheels": "Pinwheel18"
+    "wheels": "TwinTurbine21Carbon"
   }
 }

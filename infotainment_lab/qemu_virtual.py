@@ -261,7 +261,7 @@ def status(directory):
 
 def guest_action(directory, action, payload=None, *, timeout=15):
     allowed = {'status', 'controls', 'preview', 'capture', 'camera-preview', 'camera',
-               'replay', 'vehicle-services', 'browser', 'steering', 'logs', 'debug', 'focus'}
+               'replay', 'vehicle-services', 'vehicle-alerts', 'browser', 'steering', 'focus', 'debug'}
     if action not in allowed:
         raise ValueError('Unknown guest desktop operation.')
     result = json.loads(guest_execute(directory, ['/usr/sbin/runuser', '-u', 'lab', '--',

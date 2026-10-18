@@ -106,7 +106,7 @@ def test_supervisor_prepares_firmware_and_maps_in_its_own_mount_namespace(tmp_pa
     monkeypatch.setattr(backend, 'mounted_image', mount)
     checked = []
     monkeypatch.setattr(backend, 'verify_builds', lambda root, profile: checked.append(root))
-    monkeypatch.setattr(backend, 'firmware_view', lambda item, root: tmp_path / 'service-view')
+    monkeypatch.setattr(backend, 'firmware_view', lambda item, root, single_display=False: tmp_path / 'service-view')
     config = {'managed_mounts': True, 'firmware_id': firmware['id'], 'map_id': maps['id'], 'firmware': '/invisible-desktop-mount'}
     supervisor.prepare_firmware_mounts(config)
     assert mounts == [firmware['id'], maps['id']]
@@ -364,6 +364,13 @@ def test_a_model3_configuration_is_refused_on_the_sx_layout(tmp_path, monkeypatc
     assert backend.set_config_values({'values': {'VAPI_carType': 'Model3'}})['count'] == 1
 
 
+def test_the_selected_devices_layout_beats_a_stale_session_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    (tmp_path / 'session').mkdir()
+    (tmp_path / 'session/config.json').write_text('{"single_display": false}')
+    assert backend.set_config_values({'values': {'VAPI_carType': 'ModelY'}, 'single_display': True})['count'] == 1
+
+
 def test_config_values_merge_and_refuse_only_the_bad_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, 'DATA', tmp_path)
     (tmp_path / 'session').mkdir()
@@ -373,6 +380,12 @@ def test_config_values_merge_and_refuse_only_the_bad_entries(tmp_path, monkeypat
     assert result['count'] == 3 and sorted(result['rejected']) == ['A_huge', 'A_list', 'A_none', 'bad name']
     stored = backend.load_json(tmp_path / 'session/config-values.json', {})
     assert stored == {'VAPI_a': True, 'APP_b': 4.5, 'GUI_home': blob}
+
+
+def test_config_values_refuse_embedded_nul(tmp_path, monkeypatch):
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    (tmp_path / 'session').mkdir()
+    assert backend.set_config_values({'values': {'GUI_phoneCountry': '\x00\x00'}}) == {'count': 0, 'rejected': ['GUI_phoneCountry']}
 
 
 def test_config_values_remove_names(tmp_path, monkeypatch):
@@ -438,13 +451,34 @@ def test_car_config_overrides_are_folded_into_the_profile_the_runtime_reads(tmp_
     state = tmp_path / 'state'
     state.mkdir()
     (state / 'config-values.json').write_text(json.dumps(
-        {'VAPI_carType': 'ModelS', 'VAPI_packConfig': 75, 'GUI_language': 'English'}))  # a profile key, a known extra, a live setting
+        {'VAPI_carType': 'ModelS', 'VAPI_packConfig': 75, 'GUI_brightness': 50}))  # a profile key, a known extra, a live setting
     target = supervisor.user_profile(state, base)
     signals = json.loads(target.read_text())['signals']
     assert signals == {'VAPI_carType': 'ModelS', 'VAPI_trim': 23, 'VAPI_packConfig': 75}  # live settings stay out of the profile
     assert json.loads(base.read_text())['signals']['VAPI_carType'] == 'ModelX'  # the shipped file is untouched
     (state / 'config-values.json').unlink()
     assert json.loads(supervisor.user_profile(state, base).read_text())['signals']['VAPI_carType'] == 'ModelX'
+
+
+def test_firmware_version_string_comes_from_the_image(tmp_path):
+    etc = tmp_path / 'etc'
+    etc.mkdir()
+    assert supervisor.firmware_version_string(tmp_path, '2026.8.3') == '2026.8.3'  # no files: library version
+    (etc / 'customer-version').write_text('2026.8.3\n')
+    (etc / 'build-info').write_text('branch: develop\nbuild: develop-2026.8.3-11442-4af4ce1574\n')
+    assert supervisor.firmware_version_string(tmp_path) == '2026.8.3 (develop-2026.8.3-11442-4af4ce1574)'
+    (etc / 'build-info').write_text('nothing useful')
+    assert supervisor.firmware_version_string(tmp_path, 'x') == '2026.8.3'
+    assert supervisor.firmware_version_string(tmp_path / 'missing') == ''
+
+
+def test_autopilot_computer_is_only_written_when_the_config_names_one(tmp_path):
+    import json
+    base = Path(supervisor.__file__).parent / 'runtime/vehicle-profile-model-x-mcu2.json'
+    # A default GTW_dasHw restarts the UI on cars without that computer; imports and Vehicle config set it.
+    assert 'GTW_dasHw' not in json.loads(supervisor.user_profile(tmp_path, base).read_text())['signals']
+    (tmp_path / 'config-values.json').write_text(json.dumps({'GTW_dasHw': 'MONOCAM'}))
+    assert json.loads(supervisor.user_profile(tmp_path, base).read_text())['signals']['GTW_dasHw'] == 'MONOCAM'
 
 
 def test_a_model3_car_type_is_refused_in_the_dual_display_layout(tmp_path):
@@ -460,7 +494,7 @@ def test_a_model3_car_type_is_refused_in_the_dual_display_layout(tmp_path):
 def test_model3_environment_keeps_profile_and_saved_car_config(tmp_path):
     import json
     (tmp_path / 'config-values.json').write_text(json.dumps(
-        {'VAPI_carType': 'Model3', 'VAPI_trim': 7, 'GUI_language': 'English'}))
+        {'VAPI_carType': 'Model3', 'VAPI_trim': 7, 'GUI_brightness': 'English'}))
     env = supervisor.vehicle_environment({'single_display': True, 'firmware_version': '2026.26.6.5'}, tmp_path)
     assert env['UI_PLATFORM'] == 'M3' and env['UI_TARGET'] == 'ICE'
     assert env['TESLA_NATIVE_EXTENDED_VIZ'] == '1'
@@ -469,11 +503,21 @@ def test_model3_environment_keeps_profile_and_saved_car_config(tmp_path):
     signals = json.loads(Path(env['TESLA_NATIVE_VEHICLE_PROFILE']).read_text())['signals']
     assert signals['VAPI_carType'] == 'Model3' and signals['VAPI_trim'] == 7
     assert signals['VAPI_carVersionString'] == '2026.26.6.5' and signals['VAPI_chassisType'] == '3'
-    assert 'GUI_language' not in signals and not (tmp_path / 'config-conflicts.json').exists()
+    assert 'GUI_brightness' not in signals and not (tmp_path / 'config-conflicts.json').exists()
     assert 'VAPI_navigationEngine' not in signals
     env = supervisor.vehicle_environment({'single_display': True, 'maps': '/selected/maps'}, tmp_path)
     signals = json.loads(Path(env['TESLA_NATIVE_VEHICLE_PROFILE']).read_text())['signals']
     assert signals['VAPI_navigationEngine'] == 'Tesla'
+
+
+def test_model_y_selects_its_profile_on_single_display_and_is_dropped_on_sx(tmp_path):
+    import json
+    (tmp_path / 'config-values.json').write_text('{"VAPI_carType": "ModelY"}')
+    assert supervisor.vehicle_environment({'single_display': True}, tmp_path)['TESLA_NATIVE_CAR_TYPE'] == 'ModelY'
+    signals = json.loads((tmp_path / 'vehicle-profile.json').read_text())['signals']
+    assert signals['VAPI_chassisType'] == 'Y' and signals['VAPI_restraintsHardwareType'] == 'NAMY'
+    assert supervisor.vehicle_environment({'single_display': False}, tmp_path)['TESLA_NATIVE_CAR_TYPE'] == 'ModelX'
+    assert json.loads((tmp_path / 'config-values.json').read_text()) == {}
 
 
 def test_sx_identity_is_dropped_on_model3_and_sx_defaults_remain_available(tmp_path):
@@ -627,3 +671,60 @@ def test_unloaded_profile_starts_unconfined_with_a_warning(monkeypatch, capsys):
     monkeypatch.setattr(supervisor, 'command', lambda argv, **kw: SimpleNamespace(returncode=1))
     assert supervisor.confined('/usr/tesla/UI/bin/QtCar', ['QtCar']) == ['QtCar']
     assert 'AppArmor profile /usr/tesla/UI/bin/QtCar is not loaded' in capsys.readouterr().out
+
+
+def test_can_service_is_started_in_its_own_session(tmp_path, monkeypatch):
+    # Closing the panel or its terminal must not take the long-lived CAN service with it.
+    import can_service
+    started = []
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    monkeypatch.setattr(can_service, 'running', lambda state: bool(started))
+    monkeypatch.setattr(can_service, 'request', lambda state, payload, timeout=5: {'revision': 'x'})
+    monkeypatch.setattr(backend.subprocess, 'Popen',
+                        lambda argv, **kw: started.append(kw) or SimpleNamespace(poll=lambda: None, pid=1))
+    backend.can_start()
+    assert started[0]['start_new_session'] is True
+
+
+def test_can_unlock_with_a_secret_runs_the_whole_handshake(tmp_path, monkeypatch):
+    import can_service
+    from can_bus import SoftwareBus
+    from gateway import SecurityGateway
+
+    gateway = SecurityGateway(SoftwareBus(), secret=b'lab-secret')
+    sent = []
+
+    def request(state, payload, timeout=3):
+        sent.append(payload['action'])
+        if payload['action'] == 'challenge':
+            return {'challenge': gateway.challenge()}
+        return gateway.unlock(payload['response'])
+
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    monkeypatch.setattr(can_service, 'request', request)
+    assert backend.can_call({'action': 'unlock', 'secret': 'lab-secret'})['unlocked'] is True
+    assert sent == ['challenge', 'unlock'] and gateway.unlocked
+    with pytest.raises(PermissionError):
+        backend.can_call({'action': 'unlock', 'secret': 'wrong'})
+
+
+def test_can_start_passes_the_profile_and_replaces_a_service_on_another_one(tmp_path, monkeypatch):
+    import can_profiles
+    import can_service
+    started, stopped, running = [], [], [True]
+    monkeypatch.setattr(backend, 'DATA', tmp_path)
+    monkeypatch.setattr(can_profiles, 'fetch', lambda name, root: [])
+    monkeypatch.setattr(can_service, 'running', lambda state: running[0] or bool(started))
+
+    def request(state, payload, timeout=5):
+        if payload['action'] == 'stop':
+            stopped.append(True)
+            running[0] = False
+        return {'revision': can_service.SERVICE_REVISION, 'profile': 'lab'}
+
+    monkeypatch.setattr(can_service, 'request', request)
+    monkeypatch.setattr(backend.subprocess, 'Popen',
+                        lambda argv, **kw: started.append(argv) or SimpleNamespace(poll=lambda: None, pid=1))
+    backend.can_start(profile='models')
+    assert stopped and started[0][started[0].index('--profile') + 1] == 'models'
+    assert started[0][started[0].index('--databases') + 1] == str(tmp_path / 'can-databases')

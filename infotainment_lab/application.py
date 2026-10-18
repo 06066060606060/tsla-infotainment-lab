@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, QSettings, QTimer, Signal, QSize
 from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPushButton, QScrollArea, QSlider, QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QToolButton, QProgressBar, QLineEdit, QSizePolicy, QMenu)
+    QPushButton, QScrollArea, QSlider, QStackedWidget, QTabWidget, QTextEdit, QVBoxLayout, QWidget, QToolButton, QProgressBar, QLineEdit, QSizePolicy, QMenu)
 
 from .material_widgets import MaterialSwitch as QCheckBox
 from .bridge import Bridge
@@ -25,9 +25,10 @@ from .presentation import icon, readiness
 from .workspace import build_workspace
 from .simulation import Simulation
 from .desktop_instance import DesktopInstance
-from .lab_panels import BrowserPanel, CanPanel, ConsolePanel, ReplayPanel, ServicesPanel
+from .lab_panels import BrowserPanel, CanPanel, ConsolePanel, GatewayPanel, ReplayPanel, ServicesPanel
 from .config_panel import ConfigPanel
 from .steering import ACTIONS as STEERING_ACTIONS
+from . import market, vehicle_options
 from .hold_button import HoldButton
 from .diagnostic_panels import FirmwareFilesPanel, DebugPanel
 
@@ -104,6 +105,8 @@ class MainWindow(QMainWindow):
         self.busy = False
         self.active_action = None
         self.notification = None
+        self.market_dirty = self.market_syncing = self.market_moved = False
+        self.vehicle_pending = self.vehicle_restart = False
         self.alerts = []
         self.loading_options = False
         self.loaded_device_id = None
@@ -127,8 +130,8 @@ class MainWindow(QMainWindow):
         self.camera_timer.timeout.connect(self.refresh_camera)
         self.camera_timer.start(1000)
         self.debug_timer = QTimer(self)
-        self.debug_timer.timeout.connect(lambda: self.debug_panel.refresh() if self.current_page == 9 and self.debug_panel.auto.isChecked() else None)
-        self.debug_timer.start(2000)
+        self.debug_timer.timeout.connect(lambda: self.debug_panel.refresh() if self.current_page == 8 and self.debug_panel.auto.isChecked() else None)
+        self.debug_timer.start(1000)
         self.control_timer = QTimer(self)
         self.control_timer.setSingleShot(True)
         self.control_timer.timeout.connect(self.send_controls)
@@ -171,8 +174,8 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
         for index, en, symbol in ((0, 'Devices', 'devices'), (1, 'Controls', 'controls'),
                                   (2, 'Camera & replay', 'camera'), (5, 'Browsers', 'screen'),
-                                  (6, 'CAN & gateway', 'controls'), (7, 'Console', 'settings'), (8, 'Vehicle config', 'settings'),
-                                  (3, 'Diagnostics', 'settings'), (9, 'Debug', 'settings'), (4, 'About', 'help')):
+                                  (6, 'CAN & gateway', 'controls'), (7, 'Vehicle config', 'settings'),
+                                  (3, 'Diagnostics', 'terminal'), (8, 'Debug logs', 'bug'), (4, 'About', 'help')):
             nav = QToolButton()
             nav.setText(en.replace('&', '&&'))
             nav.setProperty('full_text', en)
@@ -245,13 +248,18 @@ class MainWindow(QMainWindow):
         self.browser_panel = BrowserPanel(self)
         self.services_panel = ServicesPanel(self)
         self.can_panel = CanPanel(self)
+        self.gateway_panel = GatewayPanel(self)
+        self.can_caller = self.can_panel
+        self.can_page = QTabWidget()
+        self.can_page.addTab(self.can_panel, 'OS traffic')
+        self.can_page.addTab(self.gateway_panel, 'Lab gateway')
         self.console_panel = ConsolePanel(self)
         self.config_panel = ConfigPanel(self)
         self.firmware_files_panel = FirmwareFilesPanel(self)
         self.debug_panel = DebugPanel(self)
         if config_draft: self.config_panel.restore_draft(config_draft)
         if browser_draft: self.browser_panel.restore_draft(browser_draft)
-        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.can_panel, self.console_panel, self.config_panel, self.debug_panel):
+        for page in (self.workspace_page(), self.simulator_page(), self.camera_page(), self.diagnostics_page(), self.about_page(), self.browser_panel, self.can_page, self.config_panel, self.debug_panel):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -485,17 +493,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 14, 0, 0)
         layout.addWidget(label("See what is happening", "subtitle"))
-        layout.addWidget(label("Health checks are separate from raw logs. Export creates a small report without firmware, browser profiles, raw logs or personal paths.", "muted", True))
-        row = QHBoxLayout()
-        row.addWidget(self.button("Check environment", lambda: self.bridge.call("probe")))
-        row.addWidget(self.button("View local logs", lambda: self.bridge.call("logs")))
-        row.addWidget(self.button("Export report…", lambda: self.bridge.call("report")))
-        layout.addLayout(row)
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText('Choose View local logs to inspect the current session, or Check environment to refresh setup checks.')
-        layout.addWidget(self.log_view, 1)
-        self.log_view.setMinimumHeight(240)
+        layout.addWidget(label("Health checks are separate from raw logs (see Debug logs). Export creates a small report without firmware, browser profiles, raw logs or personal paths.", "muted", True))
+        self.diagnostics_tabs = QTabWidget()
         self.alert_box, alerts = card()
         header = QHBoxLayout()
         header.addWidget(label('Alerts', 'subtitle'), 1)
@@ -507,11 +506,31 @@ class MainWindow(QMainWindow):
         self.alert_rows = QVBoxLayout()  # plain rows: the page scrolls, not a nested list
         self.alert_rows.setSpacing(10)
         alerts.addLayout(self.alert_rows)
-        layout.insertWidget(2, self.alert_box)
-        replacements, inner = card()
-        inner.addWidget(self.firmware_files_panel)
-        layout.addWidget(replacements)
+        alerts.addStretch()  # the card fills the tab at fullscreen; keep the rows at the top, not spread out
+        self.diagnostics_tabs.addTab(self.alert_box, 'Alerts')
+        self.diagnostics_tabs.addTab(self.environment_page(), 'Environment')
+        self.diagnostics_tabs.addTab(self.console_panel, 'Console')
+        files_box, files = card()
+        files.addWidget(self.firmware_files_panel)
+        self.diagnostics_tabs.addTab(files_box, 'Firmware files')
+        layout.addWidget(self.diagnostics_tabs, 1)
         self.refresh_alerts()
+        return page
+
+    def environment_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 12, 0, 0)
+        row = QHBoxLayout()
+        row.addWidget(self.button("Check environment", lambda: self.bridge.call("probe")))
+        row.addWidget(self.button("Export report…", lambda: self.bridge.call("report")))
+        row.addStretch()
+        layout.addLayout(row)
+        self.log_view = QTextEdit()  # results of Check environment and the QEMU boot check
+        self.log_view.setReadOnly(True)
+        self.log_view.setPlaceholderText('Choose Check environment to refresh setup checks.')
+        self.log_view.setMinimumHeight(360)
+        layout.addWidget(self.log_view, 1)
         return page
 
     def raise_alert(self, text, details=()):
@@ -548,7 +567,7 @@ class MainWindow(QMainWindow):
         self.clear_alerts_button.setEnabled(bool(self.alerts))
         nav = self.nav_group.button(3)
         nav.setText(f'Diagnostics  ({len(self.alerts)})' if self.alerts else 'Diagnostics')
-        nav.setIcon(icon('warning' if self.alerts else 'settings'))
+        nav.setIcon(icon('terminal'))  # the count in the label shows alerts; the icon stays the SSH-style one
 
     def about_page(self):
         page = QWidget()
@@ -569,11 +588,11 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         titles = ("Device manager", "Vehicle controls", "Camera & replay",
                   "Diagnostics", "About this lab", 'Browser workspace',
-                  'CAN & gateway', 'Console', 'Vehicle configuration', 'Debug')
+                  'CAN & gateway', 'Vehicle configuration', 'Debug logs')
         self.page_title.setText(titles[index])
         self.nav_group.button(index).setChecked(True)
         self.refresh_icons()
-        if index == 9:
+        if index == 8:
             self.debug_panel.refresh()
         elif index == 3:
             self.firmware_files_panel.refresh()
@@ -585,6 +604,7 @@ class MainWindow(QMainWindow):
         for button in self.tool_buttons.values():
             button.setIcon(icon(button.property('symbol'), c['muted']))
         self.start_button.setIcon(icon('play', c['on_primary']))
+        self.console_panel.connect_button.setIcon(icon('terminal', c['on_primary']))
         self.compact_settings.setIcon(icon('settings', c['muted']))
 
     def apply_appearance(self):
@@ -692,6 +712,43 @@ class MainWindow(QMainWindow):
         if not self.cluster_box.isChecked(): args += ["--no-cluster"]
         self.operation("start", *args)
 
+    def vehicle_changed(self, choice):
+        """The Vehicle selector: model, paint, wheels and Autopilot hardware as car-config overrides, then a restart if the device is up."""
+        try:
+            values = {**vehicle_options.values(choice['model'], choice['paint'], choice['wheel'], choice['autopilot']), **market.values(choice['market'])}
+        except ValueError as error:
+            self.show_message(str(error), True)
+            return
+        running = self.session.get('phase') in ('starting', 'booting', 'running', 'degraded', 'stopping')
+        if running and QMessageBox.question(self, 'Change vehicle', 'Apply these vehicle options? The device restarts and the controls return to Park.') != QMessageBox.Yes:
+            return
+        if not self.bridge.call('config-values', '--payload', json.dumps({'values': values, 'explicit': sorted(values), 'single_display': self.overview.single_display})):
+            self.show_message('An operation is already in progress.', True)
+            return
+        self.vehicle_pending, self.vehicle_restart = True, running
+        self.market_moved = choice['market'] != (self.session.get('market') == 'EU')
+
+    def vehicle_acknowledged(self, success):
+        restart, self.vehicle_restart, self.vehicle_pending = self.vehicle_restart, False, False
+        if not success:
+            self.show_message('The vehicle options could not be saved.', True)
+            return
+        self.market_dirty = False
+        if self.market_moved: self.services_panel.jump_to_first_place()
+        if restart:
+            self.raise_alert('Restarting the device: the vehicle options take effect at start.', ['VAPI_carType', 'VAPI_exteriorColor', 'VAPI_wheelType', 'VAPI_driverAssist'])
+            self.operation('restart')
+        else:
+            self.show_message('Vehicle options saved; they apply at the next start.')
+
+    def market_edited(self, _):
+        if not self.market_syncing: self.market_dirty = True
+
+    def set_market_switch(self, eu):
+        self.market_syncing = True
+        self.market_box.setChecked(eu)
+        self.market_syncing = False
+
     def full_reset(self):
         text = ('Delete all cached data, firmware replacements, saved settings and the library index, as if the app had just been installed? '
                 'The session stops, the firmware image is unmounted and images must be imported again. '
@@ -760,10 +817,16 @@ class MainWindow(QMainWindow):
             self.console_panel.key_result(result)
             return
         if action in ('can', 'can-start', 'can-status'):
-            self.can_panel.received(action, result)
+            # Observer replies carry their own markers; an error goes to whoever asked last.
+            data = result.get('data') or {}
+            observer = (action == 'can' and (self.can_panel.injection.inflight or any(
+                data.get(key) for key in ('observation', 'os_dbc', 'injection')) or
+                (not result.get('ok') and self.can_caller is self.can_panel)))
+            (self.can_panel if observer else self.gateway_panel).received(action, result)
             return
         if action == 'vehicle-services': self.services_panel.acknowledge(bool(result.get('ok')))
         if action == 'config-values': self.config_panel.acknowledge(bool(result.get('ok')), result.get('data'))
+        if action == 'config-values' and self.vehicle_pending: self.vehicle_acknowledged(bool(result.get('ok')))
         if action in ('start', 'stop', 'restart', 'import', 'setup', 'qemu-check', 'factory-reset'):
             self.busy, self.active_action = False, None
         if not result.get('ok'):
@@ -799,7 +862,7 @@ class MainWindow(QMainWindow):
             if data.get('mode') == 'replay': self.manual_override = False
             self.show_message('Camera source selected.')
             self.bridge.call('status')
-        elif action in ('replay', 'vehicle-services', 'config-values', 'browser', 'steering'):
+        elif action in ('replay', 'vehicle-services', 'vehicle-alerts', 'config-values', 'browser', 'steering'):
             if action == 'replay' and data.get('action') == 'play': self.manual_override = False
             if action == 'steering':
                 self.show_message(data.get('warning') or 'Steering-wheel command sent.')
@@ -829,8 +892,6 @@ class MainWindow(QMainWindow):
             self.config_panel.revert()
             self.show_message('Full reset done. Import a firmware image to start again.')
             self.update_status()
-        elif action == 'logs':
-            self.log_view.setPlainText('\n\n'.join(f'--- {name} ---\n{text}' for name, text in data.get('logs', {}).items()))
         elif action == 'report':
             path, _ = QFileDialog.getSaveFileName(self, 'Export diagnostics', 'infotainment-lab-report.json', 'JSON (*.json)')
             if path:
@@ -888,6 +949,9 @@ class MainWindow(QMainWindow):
         self.replay_panel.update_status(self.session)
         self.services_panel.update_status(self.session)
         self.config_panel.update_status(self.session)
+        if not self.market_dirty and hasattr(self, 'market_box') and self.session.get('market') in ('EU', 'NA'):
+            self.set_market_switch(self.session['market'] == 'EU')
+        if not self.vehicle_pending and self.session.get('vehicle'): self.services_panel.update_vehicle(self.session['vehicle'])
         self.firmware_files_panel.update_status(self.session)
         if hasattr(self, 'control_timer') and not self.manual_override and not self.control_timer.isActive() and 'controls' not in self.bridge.pending:
             actual = self.session.get('replay', {}).get('telemetry_sample', {})

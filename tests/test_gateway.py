@@ -120,7 +120,7 @@ def test_bus_frames_are_published_towards_ethernet(gateway):
     assert gateway.decode(frames[0])['gear'] == 'D'
 
 
-def test_channel_mirror_forwards_lighting_to_the_powertrain_channel(gateway):
+def test_channel_mirror_forwards_lighting_to_the_chassis_channel(gateway):
     gateway.bus.inject(can_database.message('LAB_lighting').encode({'indicator': 'Right'}))
     assert any(f['id'] == 0x3F5 for f in gateway.bus.channel('ch').trace())
 
@@ -230,3 +230,23 @@ def test_open_bus_falls_back_to_software_when_socketcan_is_unavailable():
     with pytest.raises(ValueError):
         bus.send(Frame(0x118, b'', 'nosuch'))
     bus.close()
+
+
+def test_an_extended_frame_does_not_pass_a_standard_allowlist(gateway):
+    unlock(gateway)
+    # Low 11 bits equal the allowlisted 0x3F5, but it is a different frame.
+    decision = gateway.from_ethernet(Frame(0x100003F5, b'\x01', 'veh', extended=True))
+    assert not decision.allowed and 'not in the route filter' in decision.reason
+    assert gateway.bus.channel('veh').transmitted == 0
+
+
+def test_diagnostic_requests_need_service_mode_as_well_as_unlock(gateway):
+    request = Frame(0x641, bytes(8), 'party')
+    unlock(gateway)
+    decision = gateway.from_ethernet(request)
+    assert not decision.allowed and decision.reason == 'Service Mode is off'
+    gateway.service_mode = True
+    assert gateway.from_ethernet(request).allowed
+    assert gateway.status()['service_mode'] is True
+    gateway.lock()
+    assert 'locked' in gateway.from_ethernet(request).reason

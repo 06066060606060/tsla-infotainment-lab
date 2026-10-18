@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
@@ -17,6 +18,44 @@ def wsl_path_argument(path, convert):
 
 class Results(QObject):
     finished = Signal(str, dict)
+
+
+# Short, frequent actions reuse a warm `backend.py serve` process instead of paying
+# the interpreter start and imports (~75 ms) on every call. Long ones stay one-shot.
+FAST = frozenset(('status', 'preview', 'camera-preview', 'debug', 'can', 'can-status', 'controls',
+                  'steering', 'vehicle-services', 'vehicle-alerts', 'config-values', 'replay'))
+IDLE, IDLE_LIMIT, IDLE_LOCK = [], 4, threading.Lock()
+
+
+def warm_call(runner, tail, timeout, **options):
+    """One reply line from an idle worker for this runner (or a new one); a worker that died while idle is retried once."""
+    for attempt in range(2):
+        with IDLE_LOCK:
+            proc = next((p for p in IDLE if p.runner == runner and p.poll() is None), None)
+            if proc: IDLE.remove(proc)
+        fresh = proc is None
+        if fresh:
+            proc = subprocess.Popen([*runner, 'serve'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', **options)
+            proc.runner = runner
+        timer = threading.Timer(timeout, proc.kill)
+        timer.start()
+        try:
+            proc.stdin.write(json.dumps(tail) + '\n')
+            proc.stdin.flush()
+            line = proc.stdout.readline().replace('\x00', '').strip()
+        except OSError:
+            line = ''
+        finally:
+            timer.cancel()
+        if line:
+            with IDLE_LOCK:
+                if len(IDLE) < IDLE_LIMIT: IDLE.append(proc); proc = None
+            if proc: proc.kill()
+            return line
+        proc.kill()
+        if fresh: break  # a new process that dies without answering was killed by the timer or is broken
+    raise subprocess.TimeoutExpired(runner, timeout)
 
 
 class Work(QRunnable):
@@ -35,6 +74,7 @@ class Work(QRunnable):
         try:
             args = list(self.arguments)
             backend = str(BACKEND)
+            runner = None
             if os.name == "nt":
                 def linux_path(path):
                     answer = subprocess.run(["wsl.exe", "-d", self.distro, "--", "wslpath", "-a", "-u", path], timeout=30, **options)
@@ -56,7 +96,8 @@ class Work(QRunnable):
                     if not uid.isdigit(): raise RuntimeError("WSL does not have a default desktop user.")
                     prefix += ["-u", "root"]
                     args += ["--uid", uid]
-                argv = [*prefix, "--", "/usr/bin/python3", backend, self.action, *args]
+                runner = [*prefix, "--", "/usr/bin/python3", backend]
+                argv = [*runner, self.action, *args]
             elif self.action == "setup":
                 args += ["--uid", str(os.getuid())]
                 if os.environ.get("WSL_DISTRO_NAME"):
@@ -65,10 +106,15 @@ class Work(QRunnable):
                 else:
                     argv = ["pkexec", "/usr/bin/python3", backend, self.action, *args]
             else:
-                argv = ["/usr/bin/python3", backend, self.action, *args]
-            completed = subprocess.run(argv, timeout=2400 if self.action == 'setup' else 1200 if self.action in ("import", "qemu-check") else 120, **options)
-            lines = completed.stdout.replace("\x00", "").strip().splitlines()
-            result = json.loads(lines[-1]) if lines else {"ok": False, "error": completed.stderr.strip()[-2000:]}
+                runner = ["/usr/bin/python3", backend]
+                argv = [*runner, self.action, *args]
+            if runner and self.action in FAST:
+                result = json.loads(warm_call(runner, [self.action, *args], 120, env=env,
+                                              **({"creationflags": options["creationflags"]} if "creationflags" in options else {})))
+            else:
+                completed = subprocess.run(argv, timeout=2400 if self.action == 'setup' else 1200 if self.action in ("import", "qemu-check") else 120, **options)
+                lines = completed.stdout.replace("\x00", "").strip().splitlines()
+                result = json.loads(lines[-1]) if lines else {"ok": False, "error": completed.stderr.strip()[-2000:]}
             if not isinstance(result, dict): raise ValueError("Invalid worker response")
         except FileNotFoundError:
             result = {"ok": False, "error": "The Linux runtime is not available. Install WSL2 with Debian on Windows, or Python 3 and pkexec on Linux."}
@@ -107,8 +153,12 @@ class Bridge(QObject):
             self.epoch += 1
             self.pending.clear()
 
+    # Independent, short requests to the CAN service. Dropping one while another
+    # is in flight lost the unlock challenge whenever a refresh was running.
+    CONCURRENT = frozenset(('can', 'can-status'))
+
     def call(self, action, *arguments):
-        if action in self.pending: return False
+        if action in self.pending and action not in self.CONCURRENT: return False
         self.pending.add(action)
         arguments = [*arguments, '--engine', self.engine]
         if self.vm_directory:

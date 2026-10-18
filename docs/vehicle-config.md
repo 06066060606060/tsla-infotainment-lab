@@ -23,6 +23,14 @@ they are not written. The firmware version comes from the selected image unless
 explicitly overridden. Hardware options may need adjustment for another build.
 Profile writes distinguish accepted values from rejected or mismatched readbacks.
 
+## Vehicle selector
+
+**Controls > Vehicle** writes the same overrides without the CSV page: model (Model 3 or
+Model Y, which also picks the matching profile), paint (`VAPI_exteriorColor`), wheels
+(`VAPI_wheelType`) and Autopilot hardware (`VAPI_driverAssist`). Choosing a model selects
+its stock wheel. Options live in `vehicle_options.py`. Apply confirms, saves to
+`session/config-values.json` and restarts the device. The EU market switch sits on the same tab.
+
 ## Import
 
 **Import CSV** reads the file and lists every row. Entries whose value is

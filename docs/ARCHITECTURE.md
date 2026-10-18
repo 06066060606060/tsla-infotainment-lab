@@ -55,13 +55,13 @@ not assigned to physical CAN buses from their identifiers. See
 
 `application.py`, `workspace.py`, `presentation.py`, `lab_panels.py` and
 `config_panel.py` own the native widgets, device manager and the Camera & replay,
-Browsers, Vehicle services, CAN & gateway, Console and Vehicle config panels.
-Diagnostics holds an Alerts card fed by configuration refusals and restarts. Launch choices are stored per image in
+Browsers, Vehicle services, CAN & gateway and Vehicle config panels.
+Diagnostics is a tab page: Alerts (configuration refusals and restarts), Environment (Check environment results) and Console. Launch choices are stored per image in
 Qt's user settings. Pages scroll when content exceeds the window. Errors remain
 visible independently of background polling.
 
-Diagnostics also manages explicit per-image file replacements. The Debug sidebar
-page takes bounded local log snapshots through `debug_logs.py` and polls only
+Diagnostics also manages explicit per-image file replacements. The Debug logs sidebar
+page (session logs, journals and QEMU serial) takes bounded local log snapshots through `debug_logs.py` and polls only
 while visible. Native kernel sources are labelled as host logs; QEMU keeps serial
 output available while guest journals are unavailable. Raw output stays outside
 public diagnostic reports. See [firmware replacements and Debug](firmware-debug.md).

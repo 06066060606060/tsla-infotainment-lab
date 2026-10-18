@@ -133,3 +133,50 @@ def test_frames_use_the_extended_length_for_large_catalogues():
     frame = odin_engine.ws_frame(big)
     assert frame[1] == 127 and struct.unpack('!Q', frame[2:10])[0] == 70000
     assert odin_engine.ws_frame(b'x' * 300)[1] == 126
+
+
+def test_debug_guarded_write_follows_qtcarserver_semantics():
+    current, writes = {'GUI_serviceMode': 'true'}, []
+    read = lambda name: (name in current, current.get(name, ''))
+    write = lambda name, value: writes.append((name, value)) or True
+    assert odin_engine.set_if(read, write, 'GUI_serviceMode', 'false', '', '')
+    assert not odin_engine.set_if(read, write, 'GUI_serviceMode', 'false', 'false', '')
+    assert not odin_engine.set_if(read, write, 'GUI_serviceMode', 'false', '', 'true')
+    assert odin_engine.set_if(read, write, 'GUI_serviceMode', 'false', 'true', 'false')
+    assert writes == [('GUI_serviceMode', 'false')] * 2
+
+
+def test_debug_dump_hides_invalid_values_unless_asked():
+    stored = {'A': (True, '1'), 'B': (True, '<invalid>'), 'C': (False, '')}
+    read = stored.__getitem__
+    assert odin_engine.dump(read, stored, 'text', False) == ('text/plain', 'A=1\n')
+    mime, body = odin_engine.dump(read, stored, 'json', True)
+    assert mime == 'application/json' and json.loads(body) == {'A': '1', 'B': '<invalid>', 'C': '<invalid>'}
+
+
+def test_tasks_are_offered_to_the_lab_gateway(tmp_path):
+    import can_service
+    from vehicle_services import VehicleServices
+
+    service = can_service.GatewayService(tmp_path, prefer='software', endpoint=None, secret=b'test-secret')
+    try:
+        send = service.handle
+        assert odin_engine.gateway_outcome(send, 'Common/tasks/LAB_TASK')[0] == 'GATEWAY_REFUSED'
+        challenge = service.handle({'action': 'challenge'})['challenge']
+        service.handle({'action': 'unlock', 'response': service.gateway.expected_response(bytes.fromhex(challenge))})
+        reason, message = odin_engine.gateway_outcome(send, 'Common/tasks/LAB_TASK')
+        assert reason == 'GATEWAY_REFUSED' and 'Service Mode is off' in message
+        service.handle({'action': 'state', 'vehicle_services': dict(VehicleServices().as_dict(), service_mode=True)})
+        reason, message = odin_engine.gateway_outcome(send, 'Common/tasks/LAB_TASK')
+        assert reason == 'NO_ECU' and 'no vehicle ECU' in message
+        request = [f for f in service.handle({'action': 'trace', 'channel': 'party'})['frames'] if f['id'] == 0x641]
+        assert request and request[-1]['data'].replace(' ', '').startswith('31')
+    finally:
+        service.bus.close()
+
+
+def test_a_stopped_can_service_still_reports_no_vehicle():
+    def send(request):
+        raise RuntimeError('The CAN gateway service is not running. Start it from the CAN panel.')
+    reason, message = odin_engine.gateway_outcome(send, 'Common/tasks/LAB_TASK')
+    assert reason == 'NO_VEHICLE' and 'no vehicle is attached' in message and 'CAN service' in message

@@ -177,6 +177,9 @@ def dispatch(args, backend):
         return result
     if action == 'steering':
         payload = {'button': args.button}
+    elif action == 'can-start':
+        payload = {'backend': args.can_backend, 'profile': args.can_profile,
+                   'create_interfaces': args.create_interfaces, 'port': args.bridge_port}
     elif action == 'camera':
         payload = {'source': args.source}
         from .virtual_inputs import import_media, connect_raw, stop_relay

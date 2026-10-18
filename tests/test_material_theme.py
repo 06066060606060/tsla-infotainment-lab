@@ -60,6 +60,15 @@ def test_bridge_ignores_responses_from_previous_mode():
     assert 'status' not in bridge.pending
 
 
+def test_bridge_does_not_drop_overlapping_can_requests(monkeypatch):
+    # A refresh in flight used to swallow the unlock request.
+    bridge = Bridge()
+    monkeypatch.setattr(bridge.pool, 'start', lambda work: None)
+    assert bridge.call('can', '--payload', '{"action": "trace"}')
+    assert bridge.call('can', '--payload', '{"action": "unlock"}')
+    assert bridge.call('status') and not bridge.call('status')
+
+
 @pytest.mark.parametrize('mode', ['light', 'dark'])
 @pytest.mark.parametrize('accent', ACCENTS)
 def test_text_roles_have_normal_text_contrast(mode, accent):

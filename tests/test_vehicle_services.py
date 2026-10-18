@@ -4,8 +4,24 @@ import pytest
 from infotainment_lab.vehicle_services import (
     CAPABILITIES, FIELD_SPECS, DisplayWriter, PreferenceSync, VehicleServices,
     decode_value, display_values, speed_display_values,
-    replay_location, equivalent, PREFERENCES, CENTER_CHANNELS, media_network_values, navigation_fix,
+    replay_location, equivalent, PREFERENCES, CENTER_CHANNELS, REQUEST_FIELDS, media_network_values,
+    navigation_fix, gateway_lock_values, GATEWAY_LOCK_SIGNALS,
 )
+
+
+def test_gateway_lock_values_track_the_unlock_state():
+    now = 1_000.0
+    # The page reads unlocked as LEVEL_SERVICE with at least ten seconds left.
+    unlocked = gateway_lock_values(True, now + 90, now)
+    assert unlocked == {'GTW_diagLevel': 'LEVEL_SERVICE', 'GTW_diagRemainingSeconds': 90,
+                        'GTW_diagUnlockProcedureActive': False}
+    assert set(unlocked) == set(GATEWAY_LOCK_SIGNALS)
+    # Fewer than ten seconds left, expired, or locked all read as the locked default.
+    assert gateway_lock_values(True, now + 5, now)['GTW_diagLevel'] == 'LEVEL_NORMAL_OPERATION'
+    assert gateway_lock_values(True, now - 1, now)['GTW_diagLevel'] == 'LEVEL_NORMAL_OPERATION'
+    assert gateway_lock_values(False, 0, now) == {'GTW_diagLevel': 'LEVEL_NORMAL_OPERATION',
+                                                  'GTW_diagRemainingSeconds': 0,
+                                                  'GTW_diagUnlockProcedureActive': False}
 
 
 @pytest.mark.parametrize("patch", [
@@ -61,6 +77,12 @@ def test_model_maps_only_display_telemetry_and_reports_unverified_domains():
     assert CAPABILITIES['tires']['mode'] == 'local-display'
     assert not any(name.startswith(("DAS_", "AUTH_", "CAPI_"))
                    for group in values.values() for name in group)
+
+
+def test_map_position_follows_the_gps_fix():
+    values = display_values(VehicleServices().patched({"latitude_deg": 40.4168, "longitude_deg": -3.7038}))
+    assert values["latitude_deg"]["LOC_estimatedLat"] == values["latitude_deg"]["LOC_geoLat"] == 40.4168
+    assert values["longitude_deg"]["LOC_estimatedLon"] == values["longitude_deg"]["LOC_geoLon"] == -3.7038
 
 
 def test_stopped_charging_and_disabled_gps_do_not_fake_active_sources():
@@ -203,6 +225,19 @@ def test_service_mode_is_center_owned_and_propagates_to_the_cluster():
     assert sync.choose('GUI_serviceMode', False, True) == ('center', False, False)
 
 
+def test_transport_showroom_and_dyno_modes_are_off_by_default_and_map_to_firmware_names():
+    model = VehicleServices()
+    assert (model.transport_mode, model.showroom_mode, model.dyno_mode) == (False, False, False)
+    assert all(FIELD_SPECS[name]['group'] == 'modes' for name in ('transport_mode', 'showroom_mode', 'dyno_mode'))
+    on = display_values(model.patched({'transport_mode': True, 'showroom_mode': True, 'dyno_mode': True}))
+    assert on['transport_mode'] == {'GUI_transportMode': True, 'MCU_transportModeOn': True}
+    assert on['showroom_mode'] == {'GUI_showroomMode': True, 'MCU_showroomModeOn': True}
+    assert on['dyno_mode'] == {'VAPI_dynoMode': True}
+    assert REQUEST_FIELDS['transport_mode'] == 'GUI_transportMode'
+    with pytest.raises(ValueError):
+        model.patched({'dyno_mode': 'on'})
+
+
 class FakeDisplay:
     def __init__(self):
         self.values = {"speed": 0.0, "mute": False, "rejected": 0.0, "ignored": 0.0}
@@ -239,7 +274,7 @@ def test_startup_profile_verifies_readback_and_respects_overrides():
     tree = ast.parse(path.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'apply_vehicle_profile')
     profile = {'speed': 1, 'ignored': 5, 'rejected': 4, 'unknown': 2}
-    scope = {'vehicle_profile': profile, 'config_values': {'speed': 10, 'GUI_language': 'English'},
+    scope = {'os': __import__('os'), 'vehicle_profile': profile, 'config_values': {'speed': 10, 'GUI_language': 'English'},
              'car_config': lambda: set(profile), 'DisplayWriter': DisplayWriter,
              'typed': lambda v: v, 'call_many': batch_calls}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), scope)
@@ -453,3 +488,13 @@ def test_power_meter_accepts_drive_and_regen_kilowatts():
     for value in (400.5, -100.5):
         with pytest.raises(ValueError, match="power_level"):
             VehicleServices.parse({"power_level": value})
+
+
+def test_odometer_is_sent_in_miles_for_the_service_panel():
+    # The Service Mode panel reads VAPI_odometer in miles and shows "mi / km".
+    model = VehicleServices.parse({"odometer_km": 16093.44})
+    assert display_values(model)["odometer_km"] == {"VAPI_odometer": pytest.approx(10000)}
+    assert VehicleServices().odometer_km == 10000
+    for value in (-1, 2000001):
+        with pytest.raises(ValueError, match="odometer_km"):
+            VehicleServices.parse({"odometer_km": value})

@@ -101,6 +101,28 @@ def test_service_refuses_an_unknown_action(service):
         service.handle({'action': 'flash-firmware'})
 
 
+def test_unlock_publishes_the_gateway_lock_state(service, tmp_path):
+    path = tmp_path / can_service.GATEWAY_LOCK
+    service.step()
+    assert json.loads(path.read_text())['unlocked'] is False
+    challenge = service.handle({'action': 'challenge'})['challenge']
+    response = service.gateway.expected_response(bytes.fromhex(challenge))
+    service.handle({'action': 'unlock', 'response': response})
+    service.step()
+    published = json.loads(path.read_text())
+    assert published['unlocked'] is True
+    assert published['unlock_expires_at'] > time.time()
+    service.handle({'action': 'lock'})
+    service.step()
+    assert json.loads(path.read_text())['unlocked'] is False
+
+
+def test_lock_state_is_not_published_when_not_following_the_session(service, tmp_path):
+    service.handle({'action': 'state', 'follow_session': False})
+    service.step()
+    assert not (tmp_path / can_service.GATEWAY_LOCK).exists()
+
+
 def test_service_state_updates_and_transmits(service):
     service.handle({'action': 'state', 'simulation': {'gear': 'D', 'speed_kph': 80}})
     service.step()
@@ -277,3 +299,39 @@ def test_a_frame_read_from_the_bus_still_applies(service):
     frame = can_database.message('LAB_driveState').encode({'gear': 'R', 'speed_kph': 4})
     service.bus._dispatch(frame, 'recv')
     assert service.simulation.gear == 'R'
+
+
+def test_extended_dbc_frames_trace_and_do_not_alias_lab_frames(service, tmp_path):
+    path = tmp_path / 'ext.dbc'
+    # 0x80000000 | 0x100: DBC's extended flag on an identifier below 0x800.
+    path.write_text('BO_ 2147483904 EXT_low: 8 X\n SG_ V : 0|8@1+ (1,0) [0|255] "" X\n'
+                    'BO_ 2147549183 EXT_high: 8 X\n SG_ V : 0|8@1+ (1,0) [0|255] "" X\n', encoding='utf-8')
+    service.handle({'action': 'load-dbc', 'path': str(path), 'channel': 'ch'})
+    assert can_database.lookup('ch', 0x100, service.gateway.table, extended=True).name == 'EXT_low'
+    service.handle({'action': 'send', 'origin': 'bus',
+                    'frame': {'channel': 'ch', 'id': '0xFFFF', 'extended': True, 'data': '2A'}})
+    trace = service.handle({'action': 'trace', 'channel': 'ch'})['frames']
+    assert trace[-1]['name'] == 'EXT_high' and trace[-1]['signals'] == {'V': 42}
+    before = service.services
+    service.handle({'action': 'send', 'origin': 'bus',
+                    'frame': {'channel': 'veh', 'id': '0x3F5', 'extended': True, 'data': 'C0 00'}})
+    assert service.services == before
+
+
+def test_service_mode_entered_on_the_display_reaches_the_gateway_and_the_bus(service, tmp_path):
+    from core import atomic_json
+
+    path = tmp_path / 'vehicle-services.json'
+    atomic_json(path, VehicleServices().as_dict())
+    state = dict(VehicleServices().as_dict(), service_mode=True)
+    # A report built on an older desktop file is ignored.
+    atomic_json(tmp_path / 'vehicle-services-feedback.json', {'state': state, 'config_mtime_ns': 1})
+    service.step()
+    assert service.gateway.service_mode is False
+    atomic_json(tmp_path / 'vehicle-services-feedback.json',
+                {'state': state, 'config_mtime_ns': path.stat().st_mtime_ns, 'source': 'native-ui'})
+    service.step()
+    assert service.services.service_mode is True and service.status()['gateway']['service_mode'] is True
+    frame = next(f for f in service.handle({'action': 'snapshot'})['frames'] if f['id'] == 0x5E1)
+    message = can_database.message('LAB_vehicleModes')
+    assert message.decode(Frame(0x5E1, bytes.fromhex(frame['data'].replace(' ', '')), 'veh'))['service_mode'] == 1
