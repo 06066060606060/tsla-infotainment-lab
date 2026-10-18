@@ -1,5 +1,25 @@
 # Validation record
 
+## Experimental Model Y profile (2026-10-18)
+
+- Evidence: `ModelY` (car type), `NAMY` (restraints) and `Crossflow19` (wheel) are
+  strings in `libVehicleInterface.so.1.0.0` of the `2026.26.6.1` ICE image; the
+  image ships Model Y art and `das-viz/ego/Y`. Chassis label `Y` follows the
+  S/X/3 label pattern and is **not** confirmed by an enum dump.
+- Before this profile, `VAPI_carType=ModelY` was outside `CAR_TYPES` and a
+  session failed to start with "The vehicle profile does not match this firmware
+  layout."
+- Automated checks: profile selection, layout refusal, fallback on bad saved
+  values.
+- Live run (2026-10-18, `2026.26.6.1` ICE, single display, `VAPI_carType=ModelY`,
+  `SolidBlack`, `TeslaAP4`): the session started and stayed running; the center
+  display restarted once for `VAPI_chassisType`, `VAPI_wheelType` and
+  `VAPI_carType`, with no restart loop and no dropped overrides. The firmware
+  logged `TIDK_VEHICLE_MODEL: ModelY`, `TIDK_VEHICLE_WHEELS_ID:
+  wheels_crossflow_19` and an energy model keyed `ModelY_BAYBERRY_19in`, so
+  chassis `Y`, `Crossflow19` and the car type are accepted. Radar position,
+  restraints readback and Model Y-specific UI screens are unverified.
+
 ## Active Start/Stop Self-Driving UI simulation (2026-10-16)
 
 - The user explicitly requested an active button and simulated engagement on

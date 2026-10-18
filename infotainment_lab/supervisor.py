@@ -32,13 +32,17 @@ restart_specs = {}
 service_retries = {}
 retry_after = {}
 RECOVERABLE = {'spotify', 'media-adapter', 'media-webapp', 'chromium-media', 'display-link',
-               'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin', 'valhalla', 'tm-server'}
+               'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin', 'alertd',
+               'vehicle-service', 'valhalla', 'tm-server'}
 # The Service Mode panel's backend and browser. Their backend needs vehicle
 # identity the lab does not provide, so their exit must not mark the session degraded.
-OPTIONAL = {'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin', 'vehicle-observer'}
+# vehicle-service is a stand-in too: without it the firmware only logs failed pushes.
+# route engine and GPS: without them navigation fails, the rest of the car still works
+OPTIONAL = {'dv-server', 'odin-engine', 'service-ui', 'service-ui-relay', 'chromium-odin', 'alertd',
+            'vehicle-service', 'valhalla', 'tm-server', 'gps-manager', 'gps-feed', 'vehicle-observer'}
 # VAPI_carType values the firmware's libQtCarVAPI defines that keep-awake may also write.
 LANGUAGE_SETTINGS = {'GUI_language', 'GUI_manualLanguage', 'GUI_locale'}
-CAR_TYPES = ('ModelS', 'ModelS2', 'ModelX', 'Model3')
+CAR_TYPES = ('ModelS', 'ModelS2', 'ModelX', 'Model3', 'ModelY')
 
 
 def prepare_service_sockets(path=Path('/tmp/dvaccess')):
@@ -81,16 +85,32 @@ def service_ui_directory(firmware: Path) -> Path | None:
 
 
 def service_ui_commands(odin: Path, state: Path, port: int = 8000,
-                        backend_directory: Path | None = None) -> tuple[list, list, list]:
+                        backend_directory: Path | None = None) -> tuple[list, list, list, list]:
     """The backend inside its own network namespace, the host relay to its port,
-    and the Odin engine stand-in its namespace's engine port is relayed to."""
+    the Odin engine stand-in its namespace's engine port is relayed to, and the
+    alert daemon stand-in the panel's alert view reads (com.tesla.Alerts)."""
     sock, engine = state / 'service-ui.sock', state / 'odin-engine.sock'
     script = RUNTIME / 'service-ui-netns.py'
-    backend = ['unshare', '--map-current-user', '--keep-caps', '-n',
-               '/usr/bin/python3', script, 'ns', sock, str(port), engine, '--',
+    namespace = ['unshare', '--map-current-user', '--keep-caps', '-n', '-m', '/usr/bin/python3', script]
+    # The updater view reads the vehicle's UDS log; the lab has no ECU updates, so it is empty.
+    backend = [*namespace, 'ns', sock, str(port), engine,
+               '--bind', f'/var/log/udsdebug.log={state / "udsdebug.log"}', '--',
                (backend_directory or odin) / 'service-ui']
+    # The image's alertd only learns alerts from vehicle CAN, so it never has any; the stand-in
+    # serves the ones raised from the desktop (vehicle-alerts.json).
+    alertd = ['/usr/bin/python3', RUNTIME / 'alertd.py', state]
     return (backend, ['/usr/bin/python3', script, 'host', sock, str(port)],
-            ['/usr/bin/python3', RUNTIME / 'odin-engine.py', engine, odin])
+            ['/usr/bin/python3', RUNTIME / 'odin-engine.py', engine, odin], alertd)
+
+
+def gps_manager_command(ui: Path) -> list:
+    """The firmware's GPS manager, which navigation starts from; gps_feed.py supplies its fix.
+
+    Valhalla and the TM server come from navigation.py.
+    """
+    return ['/usr/tesla/UI/bin/QtCarGpsManager',
+            [ui / 'bin/QtCarGpsManager', '--gw', '127.0.0.102', '--ap', '127.0.0.103', '--lb', '127.0.0.104',
+             '--apb', '127.0.0.105', '--ip', '127.0.0.100', '--udphp', '127.0.0.100:31415', '--udpgps', ':63277']]
 
 
 def session_phase(elapsed: float, positioned: bool, components: dict) -> str:
@@ -218,10 +238,30 @@ def user_profile(state, base_profile: Path, *, single_display=False, firmware_ve
     return target
 
 
+def firmware_version_string(firmware: Path, fallback: str = '') -> str:
+    """The image's own version for VAPI_carVersionString, which the Service Mode panel shows as Firmware.
+
+    Built like a vehicle shows it, "2026.8.3 (develop-2026.8.3-11442-4af4ce1574)", from the image's
+    /etc/customer-version and the build id in /etc/build-info. Missing files leave the library version."""
+    def read(name):
+        try:
+            return (firmware / 'etc' / name).read_text(errors='replace')[:4096]
+        except OSError:
+            return ''
+    version = re.search(r'\b\d{4}\.\d+(?:\.\d+)*\b', read('customer-version'))
+    version = version.group() if version else fallback
+    build = re.search(r'[A-Za-z0-9_.]*-?\d{4}\.\d+(?:\.\d+)*-\d+-[0-9a-f]{7,40}\b', read('build-info'))
+    if not version:
+        return build.group() if build else ''
+    return f'{version} ({build.group()})' if build and build.group() != version else version
+
+
 def vehicle_environment(config, state):
     """One vehicle identity for the profile writer, native UI and media services."""
     single = bool(config.get('single_display'))
-    path = user_profile(state, config_csv.profile_path(single), single_display=single,
+    saved = load_json(state / 'config-values.json', {})
+    saved_car = saved.get('VAPI_carType') if isinstance(saved, dict) else None
+    path = user_profile(state, config_csv.profile_path(single, saved_car), single_display=single,
                         firmware_version=config.get('firmware_version'),
                         navigation_engine='Tesla' if config.get('maps') else None)
     car = load_json(path, {}).get('signals', {}).get('VAPI_carType')
@@ -300,6 +340,22 @@ def confined(profile: str, argv: list) -> list:
     return [aa_exec, "-p", profile, "--", *argv]
 
 
+def cpu_limited(argv: list, quota: str = '25%', cgroup=Path('/proc/self/cgroup')) -> list:
+    """Run argv in its own systemd scope capped at quota of one core.
+
+    The Service Mode backend's main thread spins a full core once its Odin websocket
+    connects, against any server: the loop is inside the firmware binary. The scope is
+    bound to this session's unit, so it stops with the session even if this process is killed.
+    """
+    run = shutil.which('systemd-run')
+    unit = cgroup.read_text().strip().rsplit('/', 1)[-1] if cgroup.is_file() else ''
+    scope = [run, '--user', '--scope', '--quiet', '--collect']
+    if not run or not unit.endswith('.service') or command([*scope, '--', '/bin/true'], check=False).returncode:
+        print('systemd-run --user --scope is unavailable; the Service Mode backend runs without a CPU limit.', flush=True)
+        return argv
+    return [*scope, f'--property=CPUQuota={quota}', f'--property=BindsTo={unit}', '--', *argv]
+
+
 def cleanup():
     for child in reversed(list(children.values())):
         if child.poll() is None:
@@ -331,7 +387,7 @@ def prepare_firmware_mounts(config):
         if item['kind'] != 'firmware' or not profile:
             raise ValueError('The selected firmware has no compatible launch profile.')
         backend.verify_builds(root, profile)
-        config['firmware'] = str(backend.firmware_view(item, root))
+        config['firmware'] = str(backend.firmware_view(item, root, bool(profile.get('single_display'))))
         if config.get('map_id'):
             maps = backend.library_item(config['map_id'])
             if maps['kind'] != 'map':
@@ -371,7 +427,9 @@ def outer(config: dict, config_path: Path):
                                  ("cluster-display", config["cluster_display"], screen_geometry(config, "cluster"))):
         if name == "cluster-display" and not config["cluster"]: continue
         if not provided:
-            launch(name, ["Xephyr", display, "-screen", size, "-noreset", "-nolisten", "tcp", "-glamor",
+            launch(name, ["Xephyr", display, "-screen", size, "-noreset", "-nolisten", "tcp",
+                          # Single-display QtCar paints in software; glamor's upload path cut it to ~4 fps at 2880x1800.
+                          *([] if config.get("single_display") else ["-glamor"]),
                           "-title", "Infotainment Lab | " + ("Center" if name.startswith("center") else "Instruments")], state, env)
         for _ in range(60):
             if stopping: return
@@ -517,6 +575,7 @@ def session(config: dict):
     scale = display_scale(config)
     base = dict(os.environ, TESLA_NATIVE_STATE=str(state), TESLA_FIRMWARE=str(firmware),
                 TESLA_NATIVE_STATE_DELAY="0.2",
+                TESLA_NATIVE_FIRMWARE_VERSION=firmware_version_string(firmware, str(config.get("firmware_version", ""))),
                 TESLA_NATIVE_TITLE="Infotainment Lab | Center", TESLA_HOST_DISPLAY=config["display"],
                 TESLA_DV_SERVICES="com.tesla.CenterDisplay" + (",com.tesla.ClusterDisplay" if config["cluster"] else "")
                                   + (",com.tesla.TMServer" if nav else ""))
@@ -535,6 +594,7 @@ def session(config: dict):
         shutil.copyfile(RUNTIME / "display-settings-mcu2.conf", state / home / ".Tesla/car/settings.conf")
         navigation.configure_home(state / home, nav)
     launch("host-state", ["/usr/bin/python3", RUNTIME / "keep-awake.py"], state, base)
+    launch("vehicle-service", ["/usr/bin/python3", RUNTIME / "vehicle-service.py"], state, base)
     launch('os-traffic', ['/usr/bin/python3', HERE / 'native_traffic.py'], state, base)
     launch("camera-feed", ["/usr/bin/python3", RUNTIME / "camera-feed.py"], state, base)
     if config['browser']:
@@ -608,13 +668,23 @@ def session(config: dict):
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
         product = home / 'jcanproduct'
         product.write_text(base['TESLA_NATIVE_CAR_TYPE'] + '\n')
-        backend, relay, engine = service_ui_commands(odin, state, backend_directory=service_directory)
+        backend, relay, engine, alertd = service_ui_commands(odin, state, backend_directory=service_directory)
+        (state / 'udsdebug.log').touch()
         # Stands in for the vehicle's odin-engine: the task catalogue and configs from the image, no diagnostics.
         launch('odin-engine', engine, state, base)
-        launch('service-ui', backend, state, dict(base, HOME=str(home),
+        # Stands in for alertd: serves the alerts the desktop raised (vehicle-alerts.json). Started before
+        # service-ui, which subscribes to its signals once.
+        launch('alertd', alertd, state, base)
+        launch('service-ui', cpu_limited(backend), state, dict(base, HOME=str(home),
                LD_PRELOAD=f'{guard}:{state}/native-service-platform.so',
                TESLA_NATIVE_SERVICE_PRODUCT=str(product)), cwd=service_directory)
         launch('service-ui-relay', relay, state, base)
+    if nav:
+        # Navigation starts from the GPS manager's fix, which gps_feed.py supplies from the lab's position.
+        profile, argv = gps_manager_command(ui)
+        launch('gps-manager', confined(profile, argv), state,
+               dict(gui, HOME=str(nav['home']), LD_PRELOAD=guard))
+        launch('gps-feed', ['/usr/bin/python3', HERE / 'gps_feed.py', state, '127.0.0.1', '63277'], state, base)
     launch("center", confined("/usr/tesla/UI/bin/QtCar",
                      [ui / "bin/QtCar", "-graphicssystem", "raster" if config.get("single_display") else "opengl", "--touch", "mouse", "--window", "%g" % ((1 if config.get("single_display") else .6) * scale),
                       "--size", "1920x1200" if config.get("single_display") else "1200x1920", "--rotate", "0", "--rate", "60", "--fps", "5", *addresses,
@@ -666,7 +736,7 @@ def session(config: dict):
             if not media_started:
                 launch('chromium-media', media_browser_arguments(firmware, state, RUNTIME), state, browser_env)
                 if service_ui:
-                    launch('chromium-odin', odin_browser_arguments(firmware, state), state, browser_env)
+                    launch('chromium-odin', odin_browser_arguments(firmware, state, scale), state, browser_env)
                 media_started = True
             for mode in MODES:
                 name = 'chromium' if mode == 'browser' else 'chromium-' + mode

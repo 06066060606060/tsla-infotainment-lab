@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 MAX_BYTES = 32000
 MAX_FILES = 24
@@ -40,9 +41,11 @@ def journal(arguments):
 def snapshot(session, unit, *, guest=False):
     session = Path(session)
     logs = {path.name: tail(path) for path in sorted(session.glob('*.log'))[:MAX_FILES]}
-    logs['Session journal'] = journal(['-b', '-u', unit] if guest else ['--user', '-b', '-u', unit])
-    logs['Guest kernel' if guest else 'Host kernel (native runtime)'] = journal(['-k', '-b'])
+    sources = {'Session journal': ['-b', '-u', unit] if guest else ['--user', '-b', '-u', unit],
+               'Guest kernel' if guest else 'Host kernel (native runtime)': ['-k', '-b']}
     if guest:
-        logs['Guest OS journal'] = journal(['-b'])
+        sources['Guest OS journal'] = ['-b']
+    with ThreadPoolExecutor(len(sources)) as pool:  # journalctl dominates the time; run the reads side by side
+        logs.update(zip(sources, pool.map(journal, sources.values())))
     return {'logs': logs, 'captured_at': time.time(),
             'context': 'QEMU guest OS' if guest else 'Native compatibility session on the host OS'}

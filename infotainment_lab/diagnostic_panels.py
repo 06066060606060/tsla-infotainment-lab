@@ -2,6 +2,7 @@
 import time
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
                               QLineEdit, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QTextEdit)
 from .material_widgets import MaterialSwitch
@@ -131,6 +132,14 @@ class FirmwareFilesPanel(QWidget):
         self.remove.setEnabled(available and self.files.currentItem() is not None)
 
 
+def approx_lines(text):
+    """Coarse line count (1+, 10+, 100+, 500+, 1000+, then steps of 500) so labels stay stable and cheap."""
+    n = text.count('\n') + bool(text and not text.endswith('\n'))
+    if n >= 1000:
+        return f'{n // 500 * 500}+'
+    return '0' if not n else f'{max(t for t in (1, 10, 100, 500) if t <= n)}+'
+
+
 class DebugPanel(QWidget):
     def __init__(self, window):
         super().__init__()
@@ -139,7 +148,7 @@ class DebugPanel(QWidget):
         self.context = ''
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 14, 0, 0)
-        hint = QLabel('Live local debug output. Each source shows its latest output; large logs are truncated. '
+        hint = QLabel('Live debug logs, refreshed every second. Every log the session writes is listed. Each source shows its latest output; large logs are truncated. '
                       'Native mode runs on the host OS. QEMU exposes the guest serial console and available guest journals.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -190,8 +199,8 @@ class DebugPanel(QWidget):
         self.sources.blockSignals(True)
         self.sources.clear()
         self.sources.addItem('All sources', '')
-        for name in self.logs:
-            self.sources.addItem(name, name)
+        for name, text in self.logs.items():
+            self.sources.addItem(f'{name} ({approx_lines(text)})', name)
         self.sources.setCurrentIndex(max(0, self.sources.findData(selected)))
         self.sources.blockSignals(False)
         self.context = data.get('context', '')
@@ -210,13 +219,16 @@ class DebugPanel(QWidget):
                 text = '\n'.join(line for line in text.splitlines() if needle in line.casefold())
             parts.append(f'--- {name} ---\n{text}')
         content = '\n\n'.join(parts)
-        if content == self.view.toPlainText():
-            return
+        if content == self.view.toPlainText() or self.view.textCursor().hasSelection():
+            return  # nothing new, or keep the reader's selection until the next refresh
         scrollbar = self.view.verticalScrollBar()
         position = scrollbar.value()
-        follow = position >= scrollbar.maximum() - 2
+        follow = position >= scrollbar.maximum() - 24  # a line or so; the range lags layout
         self.view.setPlainText(content)
-        scrollbar.setValue(scrollbar.maximum() if follow else position)
+        if follow:
+            self.view.moveCursor(QTextCursor.End)  # maximum() is stale until layout; the cursor move forces it
+        else:
+            scrollbar.setValue(position)
 
     def reset(self):
         self.logs = {}

@@ -17,18 +17,22 @@ import threading
 import time
 
 import can_database
+import can_profiles
 from core import atomic_json
 from can_bus import backend_report, open_bus
 from can_frames import Frame
-from gateway import DEFAULT_ENDPOINT, EthernetBridge, SecurityGateway
+from gateway import DEFAULT_ENDPOINT, DEFAULT_ROUTES, EthernetBridge, SecurityGateway, database_routes
 from replay import manual_takeover
 from simulation import Simulation
-from vehicle_can import (INBOUND, PeriodicTransmitter, controls_patch, snapshot,
-                         state_patch)
+from vehicle_can import (INBOUND, PeriodicTransmitter, controls_patch, database_patches,
+                         snapshot, state_patch)
 from vehicle_services import VehicleServices
 
 SOCKET_NAME = "can-gateway.sock"
-SERVICE_REVISION = 3  # Bump whenever the service protocol or behaviour changes.
+FEEDBACK = "vehicle-services-feedback.json"
+# The lock state keep-awake mirrors onto the displays' gateway signals.
+GATEWAY_LOCK = "gateway-lock.json"
+SERVICE_REVISION = 7  # Bump whenever the service protocol or behaviour changes.
 TICK_S = .005
 ACTIONS = frozenset(("status", "send", "trace", "challenge", "unlock", "lock",
                      "state", "snapshot", "load-dbc", "stop"))
@@ -40,13 +44,20 @@ def socket_path(state: Path) -> Path:
 
 class GatewayService:
     def __init__(self, state: Path, *, prefer="auto", create=False, endpoint=DEFAULT_ENDPOINT,
-                 secret: bytes | None = None):
+                 secret: bytes | None = None, profile: str = "lab", databases: Path | None = None):
         self.state = Path(state)
         self.state.mkdir(parents=True, exist_ok=True)
-        self.bus = open_bus(prefer=prefer, create=create)
-        self.gateway = SecurityGateway(self.bus, secret=secret)
+        self.profile = profile
+        channels = can_profiles.profile(profile)["channels"]
+        messages = (can_database.MESSAGES if profile == "lab"
+                    else can_profiles.definitions(profile, databases or self.state.parent / "can-databases"))
+        self.bus = open_bus(channels, prefer=prefer, create=create)
+        routes = tuple(r for r in DEFAULT_ROUTES if {r.source, r.destination} <= {*channels, "eth"})
+        if profile != "lab":
+            routes += database_routes(messages, channels)
+        self.gateway = SecurityGateway(self.bus, routes=routes, secret=secret, messages=messages)
         self.bridge = EthernetBridge(self.gateway, endpoint) if endpoint else None
-        self.transmitter = PeriodicTransmitter()
+        self.transmitter = PeriodicTransmitter(messages=tuple(self.gateway.table.values()))
         self.simulation = Simulation()
         self.services = VehicleServices()
         self.transmit = True
@@ -54,8 +65,11 @@ class GatewayService:
         self.applied: list[dict] = []
         # The desktop session owns the state the displays receive. Follow its
         # files so a trace always matches the screen, including during replay.
-        self.sources = {'controls.json': 0, 'vehicle-services.json': 0}
+        # keep-awake's feedback carries changes made on the displays themselves
+        # (Service Mode entry, native climate), which never reach the desktop file.
+        self.sources = {'controls.json': 0, 'vehicle-services.json': 0, FEEDBACK: 0}
         self.follow_session = True
+        self._lock_published: tuple | None = None
         self.lock = threading.Lock()
         self.bus.subscribe(self._feedback)
 
@@ -69,18 +83,25 @@ class GatewayService:
         """
         if origin == "periodic":
             return
-        definition = can_database.lookup(frame.channel, frame.identifier, self.gateway.table)
-        if not definition or definition.name not in INBOUND:
+        definition = can_database.lookup(frame.channel, frame.identifier, self.gateway.table, frame.extended)
+        if not definition:
             return
         decoded = definition.decode(frame)
-        self._apply_controls(definition.name, decoded)
-        patch = state_patch(definition.name, decoded)
+        if definition.name in INBOUND:
+            self._apply_controls(definition.name, controls_patch(definition.name, decoded))
+            self._apply_services(definition.name, state_patch(definition.name, decoded))
+        elif not definition.name.startswith("LAB_"):
+            controls, services = database_patches(definition, decoded)
+            self._apply_controls(definition.name, controls)
+            self._apply_services(definition.name, services)
+
+    def _apply_services(self, name: str, patch: dict) -> None:
         if not patch:
             return
         try:
             with self.lock:
                 self.services = self.services.patched(patch)
-                self.applied.append({"frame": definition.name, "patch": patch, "at": time.time()})
+                self.applied.append({"frame": name, "patch": patch, "at": time.time()})
                 del self.applied[:-50]
                 # Close the loop: the session file is what the displays read, so
                 # an accepted request reaches the screen like a panel change.
@@ -112,14 +133,25 @@ class GatewayService:
                 with self.lock:
                     if name == 'controls.json':
                         self.simulation = Simulation.parse(value)
+                    elif name == FEEDBACK:
+                        # Only a report built on the current desktop file: an older
+                        # one would undo a change made since, until the next report.
+                        if value.get('config_mtime_ns') == self._config_stamp():
+                            self.services = VehicleServices.parse(value['state'])
                     else:
                         self.services = VehicleServices.parse(value)
-            except (OSError, ValueError, json.JSONDecodeError):
+            except (OSError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
                 continue  # A half-written or unrelated file must not stop the bus.
+        self.gateway.service_mode = self.services.service_mode
 
-    def _apply_controls(self, name: str, decoded: dict) -> None:
+    def _config_stamp(self) -> int | None:
+        try:
+            return (self.state / 'vehicle-services.json').stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _apply_controls(self, name: str, patch: dict) -> None:
         """Move the driving inputs the displays read, taking over from replay."""
-        patch = controls_patch(name, decoded)
         if not patch:
             return
         try:
@@ -167,12 +199,13 @@ class GatewayService:
             frames = []
             for name in names:
                 for item in self.bus.channel(name).trace(limit, since):
-                    definition = can_database.lookup(name, item["id"], self.gateway.table)
+                    definition = can_database.lookup(name, item["id"], self.gateway.table, item["extended"])
                     if definition:
                         item = dict(item, name=definition.name,
                                     signals={k: (round(v, 3) if isinstance(v, float) else v)
                                              for k, v in definition.decode(
-                                                 Frame(item["id"], bytes.fromhex(item["data"].replace(" ", "")), name)).items()})
+                                                 Frame(item["id"], bytes.fromhex(item["data"].replace(" ", "")), name,
+                                                       item["extended"])).items()})
                     frames.append(item)
             frames.sort(key=lambda item: item["timestamp"])
             return {"frames": frames[-limit:], "now": time.time()}
@@ -196,17 +229,21 @@ class GatewayService:
                     if type(request["transmit"]) is not bool:
                         raise ValueError("transmit must be true or false.")
                     self.transmit = request["transmit"]
+                self.gateway.service_mode = self.services.service_mode
                 return {"simulation": self.simulation.as_dict(),
                         "vehicle_services": self.services.as_dict(), "transmit": self.transmit,
                         "follow_session": self.follow_session}
         if action == "snapshot":
             with self.lock:
-                return {"frames": snapshot(self.simulation, self.services)}
+                return {"frames": snapshot(self.simulation, self.services, self.transmitter.messages)}
         if action == "load-dbc":
             path = Path(request.get("path", "")).expanduser()
-            messages = can_database.load_dbc(path, request.get("channel", "veh"),
-                                             int(request.get("period_ms", 0)))
+            channel = request.get("channel", self.bus.channels and next(iter(self.bus.channels)))
+            self.bus.channel(channel)  # Refuse a channel this profile does not open.
+            messages = can_database.load(path, channel, int(request.get("period_ms", 0)))
             self.gateway.table.update(can_database.index(messages))
+            self.transmitter.messages = tuple(self.gateway.table.values())
+            self.gateway.routes += database_routes(messages, (channel,))
             return {"loaded": [m.name for m in messages], "count": len(messages)}
         self.running = False
         return {"stopped": True}
@@ -218,7 +255,8 @@ class GatewayService:
                      "transmit": self.transmit, "follow_session": self.follow_session,
                      "state_source": "session" if self.follow_session else "panel",
                      "recent_state_changes": self.applied[-5:]}
-        return {"service": "running", "revision": SERVICE_REVISION,
+        return {"service": "running", "revision": SERVICE_REVISION, "profile": self.profile,
+                "channels": list(self.bus.channels),
                 "environment": backend_report(),
                 "bridge": {"endpoint": list(self.bridge.endpoint), "peers": len(self.bridge.peers)} if self.bridge else {},
                 "definitions": [{"name": m.name, "channel": m.channel, "id": f"0x{m.identifier:03X}",
@@ -226,9 +264,33 @@ class GatewayService:
                                 for m in self.gateway.table.values()],
                 "gateway": self.gateway.status(), **local}
 
+    def publish_lock(self) -> None:
+        """Write the gateway's unlock state where keep-awake mirrors it to the displays.
+
+        Only the desktop session's files reach the displays, so the CAN service
+        cannot set a data value itself. It records the lock state and lets
+        keep-awake project it onto the firmware's gateway signals. The file is
+        rewritten only when the state changes (an unlock, a lock, or expiry), so
+        the always-running loop does not churn it; the absolute expiry time lets
+        keep-awake keep the countdown current on its own.
+        """
+        if not self.follow_session:
+            return
+        status = self.gateway.status()
+        unlocked = bool(status.get("unlocked"))
+        expires_at = float(status.get("unlock_expires_at") or 0.0)
+        published = (unlocked, round(expires_at), bool(self.gateway.service_mode))
+        if published == self._lock_published:
+            return
+        self._lock_published = published
+        atomic_json(self.state / GATEWAY_LOCK, {
+            "unlocked": unlocked, "unlock_expires_at": expires_at,
+            "service_mode": bool(self.gateway.service_mode), "updated_at": time.time()})
+
     # -- loop -------------------------------------------------------------
     def step(self) -> None:
         self.refresh_from_session()
+        self.publish_lock()
         self.bus.poll(0)
         if self.bridge:
             self.bridge.service(0)
@@ -313,9 +375,12 @@ def main(argv=None) -> int:
     parser.add_argument("--create-interfaces", action="store_true")
     parser.add_argument("--bridge-port", type=int, default=DEFAULT_ENDPOINT[1])
     parser.add_argument("--no-bridge", action="store_true")
+    parser.add_argument("--profile", choices=tuple(can_profiles.PROFILES), default="lab")
+    parser.add_argument("--databases", help="Directory holding the downloaded public databases.")
     args = parser.parse_args(argv)
     service = GatewayService(Path(args.state), prefer=args.backend, create=args.create_interfaces,
-                             endpoint=None if args.no_bridge else ("127.0.0.1", args.bridge_port))
+                             endpoint=None if args.no_bridge else ("127.0.0.1", args.bridge_port),
+                             profile=args.profile, databases=Path(args.databases) if args.databases else None)
     print(json.dumps({"ok": True, "data": {"listening": str(socket_path(Path(args.state))),
                                            "backend": service.bus.backend}}), flush=True)
     service.serve()

@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from infotainment_lab.browser import MODES, browser_arguments, browser_url, media_browser_arguments, media_health, media_webapp_arguments, odin_browser_arguments
+from infotainment_lab.browser import MODES, browser_arguments, browser_url, media_browser_arguments, media_health, media_webapp_arguments, odin_browser_arguments, odin_scale_factor
 
 
 def test_media_health_distinguishes_live_processes_from_rejected_native_transport():
@@ -102,6 +102,15 @@ def test_service_mode_browser_mirrors_the_firmware_chromium_odin(tmp_path):
     # crashes with an FD ownership violation on the desktop.
     assert '--enable-features=NetworkServiceInProcess2' in argv
     assert sum(value.startswith('--disable-features=') for value in argv) == 1
+
+
+def test_service_mode_zoom_keeps_its_layout_at_larger_display_scales(tmp_path):
+    # The card grows with the display scale, so the zoom shrinks by the same factor.
+    assert odin_scale_factor() == '1.25'
+    assert odin_scale_factor(1.5) == '0.833'
+    assert odin_scale_factor(2) == '0.625'
+    assert odin_scale_factor(0) == odin_scale_factor(9) == '1.25'
+    assert '--force-device-scale-factor=0.833' in odin_browser_arguments(tmp_path / 'fw', tmp_path / 'state', 1.5)
 
 
 def test_every_browser_refuses_tesla_domains(tmp_path):

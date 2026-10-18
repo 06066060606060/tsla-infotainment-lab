@@ -1,3 +1,5 @@
+import json
+
 from infotainment_lab import config_csv as c
 
 SAMPLE = 'Name,Value\nAPP_fsd,0\nAUDIO_a2b,@invalid\nAPTRIAL_force,false\nVAPI_speed,1.5\n'
@@ -91,7 +93,7 @@ def test_stray_headers_are_skipped_and_only_settings_are_queued_from_an_import()
 def test_car_config_covers_the_profile_the_known_extras_and_what_was_learned():
     names = c.car_config(['VAPI_learned'])
     assert {'VAPI_carType', 'VAPI_packConfig', 'GUI_navigationEngine', 'VAPI_learned'} <= names
-    assert 'GUI_language' not in names
+    assert 'GUI_language' in names  # the language override only reaches the firmware at display start
 
 
 def test_personal_values_are_withheld_and_never_listed():
@@ -118,6 +120,18 @@ def test_a_model3_dump_is_refused_unless_the_image_is_single_display():
     assert 'Model 3' in c.unsupported_car(values, single_display=False)
     assert c.unsupported_car(values, single_display=True) == ''
     assert c.unsupported_car({'VAPI_carType': 'ModelS2'}, single_display=False) == ''
+
+
+def test_model_y_uses_its_own_profile_on_the_single_display_layout_only():
+    assert c.profile_path(True, 'ModelY') == c.MODELY_PROFILE
+    assert c.profile_path(True, 'Model3') == c.profile_path(True) == c.MODEL3_PROFILE
+    assert c.profile_path(False, 'ModelY') == c.PROFILE
+    y = json.loads(c.MODELY_PROFILE.read_text())['signals']
+    m3 = json.loads(c.MODEL3_PROFILE.read_text())['signals']
+    assert y.keys() == m3.keys()
+    assert (y['VAPI_carType'], y['VAPI_chassisType'], y['GUI_carTypeFullName']) == ('ModelY', 'Y', 'Model Y')
+    assert 'Model 3/Y' in c.unsupported_car({'VAPI_carType': 'ModelY'}, single_display=False)
+    assert c.unsupported_car({'VAPI_carType': 'ModelY'}, single_display=True) == ''
 
 
 def test_model3_defaults_are_separate_and_match_the_single_display_layout():

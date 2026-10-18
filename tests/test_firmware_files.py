@@ -219,3 +219,52 @@ def test_real_squashfs_overlay_preserves_original_and_refuses_writes(tmp_path, i
     finally:
         backend.release_mount(view)
         backend.release_mount(lower)
+
+
+HVAC_LINES = ('ClimateControlPanel = "HVACPanelSize; X:0; Y:360; BackgroundColor:transparent;"\n'
+              'BackgroundView = "CenterDisplayWidth; X:0; Y:360; Height:680;"\n'
+              'ViewSwitchStyle = "AlignItems:center; JustifyContent:center; HVAC/HVACViewWidth; X:0; Y:380; PositionType:absolute;"\n'
+              'KeepClimatePopupStyleCommon = "BackgroundColor:transparent; X:608; Y:230; PositionType:absolute; Height:100; Width:708;"\n')
+
+
+def test_layout_layer_lifts_the_controls_and_hvac_panels(tmp_path):
+    base = tmp_path / 'firmware'
+    styles = base / files.STYLES
+    styles.parent.mkdir(parents=True)
+    styles.write_text('A = "x"\nControlPanelHeight = "Height:1040;"\nAppWindowHeight = "Height:1040;"\n' + HVAC_LINES)
+    layer = files.layout_layer(base, tmp_path / 'layout')
+    assert (layer / files.STYLES).read_text() == (
+        'A = "x"\nControlPanelHeight = "Height:1140;"\nAppWindowHeight = "Height:1040;"\n'
+        + HVAC_LINES.replace('Y:360', 'Y:260').replace('Y:380', 'Y:280').replace('Y:230', 'Y:130'))
+    assert styles.read_text().count('1040') == 2  # the image itself is never touched
+    assert files.layout_layer(base, tmp_path / 'layout') == layer  # a second start rewrites its read-only copy
+
+
+def test_layout_layer_patches_the_values_that_match(tmp_path):
+    base = tmp_path / 'firmware'
+    (base / files.STYLES).parent.mkdir(parents=True)
+    (base / files.STYLES).write_text('ControlPanelHeight = "Height:1000;"\n' + HVAC_LINES)
+    layer = files.layout_layer(base, tmp_path / 'layout')
+    assert (layer / files.STYLES).read_text() == (
+        'ControlPanelHeight = "Height:1000;"\n' + HVAC_LINES.replace('Y:360', 'Y:260').replace('Y:380', 'Y:280').replace('Y:230', 'Y:130'))
+
+
+def test_layout_layer_skips_builds_with_a_different_style_file(tmp_path):
+    base = tmp_path / 'firmware'
+    assert files.layout_layer(base, tmp_path / 'layout') is None
+    (base / files.STYLES).parent.mkdir(parents=True)
+    (base / files.STYLES).write_text('ControlPanelHeight = "Height:1000;"\n')
+    assert files.layout_layer(base, tmp_path / 'layout') is None
+    assert not (tmp_path / 'layout').exists()
+
+
+def test_layout_layer_leaves_room_under_the_scrolling_lists(tmp_path):
+    base = tmp_path / 'firmware'
+    page = 'PageLayout = "ControlsPanel/ControlsPanelWidth; FlexDirection:column; JustifyContent:FlexStart; Padding:0,40,0,%d; Margin:20,0,20,0; TouchPadding:20;"\n'
+    for member, text in ((files.STYLES, 'TabLayout += "Padding:0,25; TabWidth:420; TabHeight:71;"\n' + page % 0),
+                         (files.COMMON, 'ScrollableSettingsPanel = "Flex:1; MaxHeight:800; Margin:0,20,20,20;"\n')):
+        (base / member).parent.mkdir(parents=True, exist_ok=True)
+        (base / member).write_text(text)
+    layer = files.layout_layer(base, tmp_path / 'layout')
+    assert (layer / files.STYLES).read_text() == 'TabLayout += "Padding:0,25; Margin:0,0,0,100; TabWidth:420; TabHeight:71;"\n' + page % 100
+    assert (layer / files.COMMON).read_text() == 'ScrollableSettingsPanel = "Flex:1; MaxHeight:800; Margin:0,20,20,120;"\n'

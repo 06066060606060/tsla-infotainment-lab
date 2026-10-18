@@ -45,7 +45,7 @@ is made for other systems.
 | Theater | Firmware catalog and YouTube home page | Commercial streaming, DRM playback, account-dependent flows and all catalog apps remain unverified. |
 | Dragging | Embedded page receives motion and a release; draggable tile and range slider exercised at native scale | No universal claim for every website gesture. |
 | Audio | Firmware stream routing and volume/mute control on the host | Physical DSP, microphone/telephony and subjective playback quality are not modeled. |
-| Native music card | Dedicated media web app, ChromiumApp, adapter and Spotify processes run; Spotify SDK reports connectivity | Native service security-context rejection still prevents Spotify login/playback. |
+| Native music card | Dedicated media web app, ChromiumApp, adapter and Spotify processes run; Spotify SDK reports connectivity; Amazon Music and Audible login pages load | Spotify, Apple Music/Podcasts, TuneIn refresh and other sources that sign in through a Tesla vehicle service cannot log in (see [media runtime](media-runtime.md#sign-in-through-tesla)). |
 | Multiple windows | Center, instruments, panel and optional camera preview | Each firmware view remains a separate desktop window; the device overview is view-only. |
 
 Clipboard integration is not included.

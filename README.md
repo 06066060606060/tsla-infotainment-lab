@@ -48,7 +48,7 @@ Install Python 3.11+ and `python3-venv`, then:
 
 ```bash
 git clone https://github.com/derrickyau9/tsla-infotainment-lab.git
-cd tsla-infotainment-lab
+cd tesla-cid-lab
 bash Launch-Linux.sh
 ```
 
@@ -94,7 +94,7 @@ These controls operate the local desktop session. They do not connect to a physi
 
 Enter Service Mode on the center display with the normal access code (Controls → Software, hold MODEL), or use the Developer, Service and Factory switches on the **Modes** tab. The lab starts the firmware's own Service panel: its `service-ui` backend in a private network namespace and its `chromium-odin` window, with the firmware's data-value server supplying vehicle values. A stand-in for the diagnostic engine lists the image's own task catalogue (691 tasks on a 2026.8.3 MCU2 image).
 
-This is **experimental**. Tasks never run: each ends with an error saying no vehicle is attached. Gateway-config values are placeholders, VIN, odometer and firmware fields stay empty, the CAN Viewer stays locked, and Service Mode Plus is not available. No token, identity or access-code check is changed. See [Service Mode](docs/vehicle-services.md#service-mode).
+This is **experimental**. Tasks never run: each ends with an error saying no vehicle is attached; with the CAN service running, each is first offered to the lab gateway, which passes diagnostic requests only while unlocked and in Service Mode. Gateway-config values are placeholders, the VIN stays empty, the CAN Viewer stays locked, and Service Mode Plus is not available. No token, identity or access-code check is changed. See [Service Mode](docs/vehicle-services.md#service-mode).
 
 ## Vehicle configuration
 
@@ -110,15 +110,19 @@ Some car-config values make the firmware restart its UI. The lab handles that as
 
 Refused or unknown configuration keys and firmware restarts are listed under **Diagnostics › Alerts**, with a count on the Diagnostics sidebar entry, instead of popups. Each restart alert names the display and the values it restarted for.
 
-## Firmware replacements and Debug
+## Logs
 
-**Diagnostics → Firmware replacements** lets you select an imported firmware, enter an existing file path inside its SquashFS and choose a local replacement. Stop that session before changing files; replacements apply at the next launch and persist per image. **Restore selected original** removes a replacement. The original SquashFS stays unchanged and the combined runtime mount remains read-only. Native mode needs `fuse-overlayfs` through **Prepare computer**; QEMU needs a rebuilt guest.
+**Diagnostics › Logs** lists every log the session writes and shows the one you choose, refreshed once a second while the tab is open. QtCar's own output (the lines the bench prints in its terminal) is in the center and cluster logs. **All logs** in the list streams every log together, each line tagged with its file name. It stops reading when you leave it.
+
+**Diagnostics › Environment** holds Check environment and its results.
+
+**Diagnostics › Firmware files** lets you select an imported firmware, enter an existing file path inside its SquashFS and choose a local replacement. Stop that session before changing files; replacements apply at the next launch and persist per image. **Restore selected original** removes a replacement. The original SquashFS stays unchanged and the combined runtime mount remains read-only. Native mode needs `fuse-overlayfs` through **Prepare computer**; QEMU needs a rebuilt guest.
 
 **Debug**, below Diagnostics, displays current process logs and OS debug sources, with automatic refresh, source selection and a line filter. Native mode identifies the host kernel and session journal; QEMU shows guest serial output and available guest journals. See the [firmware replacements and Debug guide](docs/firmware-debug.md).
 
 ## Console
 
-**Console** opens a terminal inside the running CID's read-only firmware root, with Tab completion, history and Ctrl+C. The native engine enters it directly through a user namespace. The QEMU engine connects over SSH to `127.0.0.1:2222` with a key the lab creates and authorizes on first **Connect**, then enters the image the guest mounts at `/firmware`. Guest images built before the SSH server was added need a rebuild.
+**Console**, the third tab of **Diagnostics** (its terminal-icon **Connect** button), opens a terminal inside the running CID's read-only firmware root, with Tab completion, history and Ctrl+C. The native engine enters it directly through a user namespace. The QEMU engine connects over SSH to `127.0.0.1:2222` with a key the lab creates and authorizes on first **Connect**, then enters the image the guest mounts at `/firmware`. Guest images built before the SSH server was added need a rebuild.
 
 ## Firmware network isolation
 

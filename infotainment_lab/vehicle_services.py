@@ -85,11 +85,13 @@ class VehicleServices:
     park_rear_right_middle_cm: float = 250
     park_rear_right_cm: float = 250
     power_level: float = 0.0
+    odometer_km: float = 10000
     developer_mode: bool = False
     service_mode: bool = False
     factory_mode: bool = False
     transport_mode: bool = False
     showroom_mode: bool = False
+    dyno_mode: bool = False
     fsd_ui_simulation: bool = False
 
 
@@ -177,6 +179,7 @@ FIELD_SPECS = {
     "charging": _field("energy", "Charging", "bool"),
     "charge_power_kw": _field("energy", "Charging power (kW)", low=0, high=350),
     "power_level": _field("energy", "Power meter (kW, negative = regen)", low=-100, high=400),
+    "odometer_km": _field("energy", "Odometer (km)", low=0, high=2000000),
     "volume_pct": _field("audio", "Volume (%)"),
     "muted": _field("audio", "Mute", "bool"),
     "latitude_deg": _field("navigation", "Latitude", low=-90, high=90, nullable=True),
@@ -192,8 +195,9 @@ FIELD_SPECS = {
     "developer_mode": _field("modes", "Developer mode", "bool"),
     "service_mode": _field("modes", "Service mode", "bool"),
     "factory_mode": _field("modes", "Factory mode", "bool"),
-    "transport_mode": _field("modes", "transport mode", "bool"),
-    "showroom_mode": _field("modes", "showroom mode", "bool"),
+    "transport_mode": _field("modes", "Transport mode", "bool"),
+    "showroom_mode": _field("modes", "Showroom mode", "bool"),
+    "dyno_mode": _field("modes", "Dyno test mode", "bool"),
     **{f"tire_{wheel}_bar": _field("tires", f"{label} pressure (bar)", low=0, high=5)
        for wheel, label in (("fl", "Front left"), ("fr", "Front right"),
                             ("rl", "Rear left"), ("rr", "Rear right"))},
@@ -205,8 +209,8 @@ CAPABILITIES = {
     "lights": {"mode": "local-display", "detail": "Headlight/high-beam indicators and lighting telemetry."},
     "energy": {"mode": "local-display", "detail": "Battery and charging telemetry; no battery or charging-station model."},
     "audio": {"mode": "host-backed", "detail": "Volume and mute for firmware audio streams on the host."},
-    "navigation": {"mode": "local-display", "detail": "Simulated GPS and heading; selected TeslaMaps packages provide offline routing. Street imagery uses the network provider; live traffic remains unverified."},
-    "modes": {"mode": "local-display", "detail": "Developer, service and factory mode flags on the firmware displays; no vehicle-side unlock."},
+    "navigation": {"mode": "local-display", "detail": "Simulated GPS, heading, destination and remaining trip metadata; selected TeslaMaps packages provide offline routing. Street imagery uses the network provider; live traffic remains unverified."},
+    "modes": {"mode": "local-display", "detail": "Developer, service, factory, transport, showroom and dyno mode flags on the firmware displays; no vehicle-side unlock or drive-unit change."},
     "tires": {"mode": "local-display", "detail": "Simulated wheel pressures are sent in bar to native Conti/Tesla TPMS display fields. The firmware formats its selected pressure units; physical sensors and calibration are not connected."},
     "parking": {"mode": "local-display", "detail": "Opt-in simulated ultrasonic Park Assist status and ten adjustable distances in centimeters; no camera perception, physical sensors, CAN frames or automatic steering."},
     "vehicle_hardware": {"mode": "unavailable", "detail": "Physical ECU/CAN, powertrain, charging equipment and vehicle sensors are not connected."},
@@ -258,6 +262,8 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "charging": {"VAPI_isCharging": v.charging, "GUI_chargeSessionActive": v.charging},
         "charge_power_kw": {"VAPI_chargerPower": v.charge_power_kw if v.charging else 0.0},
         "power_level": {"VAPI_powerLevel": v.power_level},
+        # The Service Mode panel reads VAPI_odometer in miles and shows mi and km.
+        "odometer_km": {"VAPI_odometer": v.odometer_km / 1.609344},
         "volume_pct": {"GUI_audioVolume": v.volume_pct / 100 * volume_max},
         "muted": {"GUI_muteAudioRequest": v.muted},
         "nav_destination": {"GUI_navDestinationLocationName": v.nav_destination},
@@ -266,8 +272,10 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
         "developer_mode": {"GUI_developerMode": v.developer_mode},
         "service_mode": {"GUI_serviceMode": v.service_mode},
         "factory_mode": {"GUI_factoryMode": v.factory_mode},
-        "transport_mode": {"GUI_transportMode": v.transport_mode},
-        "showroom_mode": {"GUI_showroomMode": v.showroom_mode},
+        # Names found in the 2026.8.3 MCU2 image's /usr/tesla/UI strings.
+        "transport_mode": {"GUI_transportMode": v.transport_mode, "MCU_transportModeOn": v.transport_mode},
+        "showroom_mode": {"GUI_showroomMode": v.showroom_mode, "MCU_showroomModeOn": v.showroom_mode},
+        "dyno_mode": {"VAPI_dynoMode": v.dyno_mode},
         # Both native sensor families use bar. The pressure label itself converts
         # to the selected display unit, so converting here would scale it twice.
         **{f'tire_{wheel}_bar': {f'TPMS_pressure{wheel.upper()}{family}': getattr(v, f'tire_{wheel}_bar')
@@ -284,9 +292,12 @@ def display_values(model: VehicleServices, volume_max: float = 10.333) -> dict[s
     for field in closure_fields:
         result[field]['VAPI_doorState'] = door_mask
     if v.latitude_deg is not None and v.longitude_deg is not None:
-        result["latitude_deg"] = {"LOC_geoLat": v.latitude_deg, "NAV_vehicleLatitude": v.latitude_deg, "LOC_geoValidFix": True,
+        # The map centers on LOC_estimated*, not LOC_geo*, so both must carry the fix.
+        result["latitude_deg"] = {"LOC_geoLat": v.latitude_deg, "LOC_estimatedLat": v.latitude_deg,
+                                  "NAV_vehicleLatitude": v.latitude_deg, "LOC_geoValidFix": True,
                                   "LOC_geoLocation": [round(v.latitude_deg, 6), round(v.longitude_deg, 6)]}
-        result["longitude_deg"] = {"LOC_geoLon": v.longitude_deg, "NAV_vehicleLongitude": v.longitude_deg}
+        result["longitude_deg"] = {"LOC_geoLon": v.longitude_deg, "LOC_estimatedLon": v.longitude_deg,
+                                   "NAV_vehicleLongitude": v.longitude_deg}
     else:
         result["latitude_deg"] = {"LOC_geoValidFix": False}
         result["longitude_deg"] = {}
@@ -344,7 +355,7 @@ REQUEST_FIELDS = {
     "alarm_armed": "GUI_alarmOnRequest",
     "power_level": "VAPI_powerLevel",
     "developer_mode": "GUI_developerMode", "service_mode": "GUI_serviceMode",
-    "factory_mode": "GUI_factoryMode", "transport_mode": "GUI_transportMode", "showroom_mode": "GUI_showroomMode",
+    "factory_mode": "GUI_factoryMode", "transport_mode": "GUI_transportMode",
 }
 
 
@@ -438,6 +449,14 @@ CENTER_CHANNELS = (
     'GUI_nowPlayingSeekable', 'GUI_mediaCurrentStatus', 'GUI_mediaNowPlayingSource',
 )
 
+# The center plans the route and turns; the cluster only shows them. Copy the center's
+# values across, and never let the cluster's copy replace them.
+NAVIGATION_CHANNELS = (
+    'NAV_activeRouteId', 'NAV_activeRouteStatus', 'NAV_activeRouteLastUpdated',
+    'NAV_nextTurnId', 'NAV_nextTurnDirection', 'NAV_nextTurnStreetName', 'NAV_nextTurnAdvice',
+    'NAV_vehicleOnMap', 'GUI_turnByTurnJson',
+)
+
 
 def decode_value(raw):
     text = str(raw)
@@ -485,7 +504,7 @@ class PreferenceSync:
     def choose(self, name, center, cluster, restarted=()):
         # Playback belongs to the center player. A stale instrument value must
         # never replace it, including when the center process has restarted.
-        if name in CENTER_CHANNELS:
+        if name in CENTER_CHANNELS or name in NAVIGATION_CHANNELS:
             return (None if center is None or equivalent(center, cluster) else "center"), center, False
         if equivalent(center, cluster):
             self.baseline[name] = center
@@ -518,6 +537,33 @@ def speed_display_values(speed_kph: float, distance_units: str) -> dict:
     return {"VAPI_speedUnits": 1 if metric else 0,
             "VAPI_vehicleSpeed": speed_kph / 3.6,
             "VAPI_displaySpeed": int(math.floor(displayed + .5))}
+
+
+# The data values the firmware Service Mode reads for the gateway-unlock state.
+# The service-ui page does not read a "GTW_UNLOCKED" data value; it computes that
+# state itself from GTW_diagLevel and GTW_diagRemainingSeconds:
+#   unlocked = level in {LEVEL_FACTORY, LEVEL_DIAG_LINK_ACTIVE}
+#              or (level == LEVEL_SERVICE and remaining >= 10)
+# so a service unlock is LEVEL_SERVICE with at least ten seconds left. The locked
+# default is LEVEL_NORMAL_OPERATION (LEVEL_SERVICE_DRIVE would instead ask the
+# user to shift to park). GTW_diagUnlockProcedureActive drives the transient
+# "unlock in progress" state, which the lab does not use (its unlock is instant).
+GATEWAY_LOCK_SIGNALS = ("GTW_diagLevel", "GTW_diagRemainingSeconds", "GTW_diagUnlockProcedureActive")
+# The page needs at least this many seconds left to treat LEVEL_SERVICE as unlocked.
+_GATEWAY_UNLOCK_MIN_S = 10
+
+
+def gateway_lock_values(unlocked: bool, unlock_expires_at: float, now: float) -> dict:
+    """Project the lab gateway's unlock state onto the firmware's gateway signals.
+
+    unlock_expires_at is an absolute time; the remaining seconds are derived here
+    so the value stays current between the CAN service's infrequent writes.
+    """
+    remaining = max(0, round(float(unlock_expires_at) - now)) if bool(unlocked) else 0
+    live = remaining >= _GATEWAY_UNLOCK_MIN_S
+    return {"GTW_diagLevel": "LEVEL_SERVICE" if live else "LEVEL_NORMAL_OPERATION",
+            "GTW_diagRemainingSeconds": int(remaining),
+            "GTW_diagUnlockProcedureActive": False}
 
 
 def replay_location(status: dict, request: dict, now: float) -> VehicleServices | None:

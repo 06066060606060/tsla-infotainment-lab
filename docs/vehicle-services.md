@@ -73,7 +73,13 @@ Auto, Dark outside determines whether the headlights and parking lights are on.
 
 The desktop Services page applies edits as they are made; there is no Apply
 button. Its Modes tab has switches for Developer mode (`GUI_developerMode`),
-Service mode (`GUI_serviceMode`) and Factory mode (`GUI_factoryMode`). The local model publishes
+Service mode (`GUI_serviceMode`) and Factory mode (`GUI_factoryMode`), plus
+Transport mode (`GUI_transportMode` and `MCU_transportModeOn`), Showroom mode
+(`GUI_showroomMode` and `MCU_showroomModeOn`) and Dyno test mode (`VAPI_dynoMode`).
+Transport mode is verified on the 2026.8.3 MCU2 image; the showroom and dyno
+names come from that image's QtCar strings. Each switch shows the firmware's own
+response (Applied, or Local only when a display does not accept the name).
+Native Service panel changes to `GUI_transportMode` update the switch. The local model publishes
 `VAPI_alarmStatus=Disarmed` by default because an invalid alarm state causes the
 native access-code dialog to reject entry. The Doors page can select Armed for
 alarm-state UI testing. Both values remain inside this application's private
@@ -125,14 +131,39 @@ other engine command, finishes with exit code 2 ("Routine Error") and the
 message that no vehicle is attached. It runs no diagnostics, reaches no ECU and
 performs no authentication or security access.
 
+When the lab's CAN service is running, a task is first offered to its emulated
+gateway as a `LAB_gatewayRequest` (`0x641` on `party`; byte 0 is `0x31`, bytes
+1–4 the CRC-32 of the task name), so it shows up in the CAN trace. The gateway
+passes it only while unlocked and in Service Mode, and the task's error says
+which: `GATEWAY_REFUSED` with the gateway's reason, or `NO_ECU` when the request
+crossed the gateway and nothing answered. Without the CAN service the error is
+`NO_VEHICLE`, as before. See [the gateway's Service Mode link](can-gateway.md#service-mode).
+
+The vehicle's alert daemon is replaced by `runtime/alertd.py`, which owns
+`com.tesla.Alerts` `/Alerts` on the session bus. Services › Alerts (backend action
+`vehicle-alerts`) writes the raised names to `session/vehicle-alerts.json`; the
+stand-in answers `getActiveAlerts(q)` with `a(sq(tu)a{ss})` and `getRecentAlerts(q)`
+with `a(sq(tu)(tu)a{ss})` (name, audience mask, set and cleared times, empty payload)
+and emits `AlertSet` `(sq(tu)a{ss})` and `AlertCleared` `(sq(tu)(tu)a{ss})` when the
+file changes, the shapes the image's own `alertd` (2026.8.3) introspects. That
+daemon is not run: it learns alerts only from vehicle CAN, so it never had any. The page's **Alerts & DTCs** tool is gated by the `FEATURE_enableSUIAlertsPanel`
+data value, which keep-awake keeps `true` on `QtCarDvServer` (the displays pick
+it up from there without a UI restart); raised alerts are listed there and also
+appear as counts and health dots on the sections the image's
+`service_ui/static/assets/alerts.json` maps them to. `service-ui` subscribes to
+the signals once, so after an `alertd` restart only a page reload shows changes.
+
 None of these processes marks the session degraded when it exits; see
-`dv-server.log`, `odin-engine.log`, `service-ui.log`, `service-ui-relay.log` and
+`dv-server.log`, `odin-engine.log`, `alertd.log`, `service-ui.log`, `service-ui-relay.log` and
 `chromium-odin.log`.
 
 Verified on the MCU2 center display: the native Service Mode panel renders its
 Vehicle Info, Tools, Driver Assist, Infotainment, High Voltage, Low Voltage and
-Thermal sections. VIN, odometer and firmware fields stay empty, the CAN Viewer
-is locked, and alerts are unavailable. The Odin engine protocol was verified
+Thermal sections. Vehicle Info reads Firmware from `VAPI_carVersionString`
+(the image's own version, written at each display start), Autopilot Hardware
+from `GTW_dasHw` (from an imported config or a Vehicle config value; "None" without one) and Odometer
+from `VAPI_odometer` in miles (the Odometer control on the Energy tab). VIN stays
+empty and the CAN Viewer is locked. The Odin engine protocol was verified
 against the firmware `service-ui` binary: the task catalogue, configs, maintenance
 options, service history and the no-vehicle task result reach the page.
 
@@ -156,6 +187,49 @@ no control bus calls; periodic verification detects overwritten values and
 display restarts. Host Internet and disk measurements run separately every
 30 seconds. The control feedback records the target tick and measured apply
 duration so a slow desktop can be diagnosed without assuming a fixed frame rate.
+
+## Other display setting requests
+
+Settings without a field in the model above (for example an acceleration or
+drive mode) are requested by the center display as a `GUI_<name>Request`
+DataValue. On a vehicle a module answers on a status value the UI binds to; in
+the lab nothing did, so the choice snapped back or had no effect.
+`display_requests.py` now answers them:
+
+1. At session start keep-awake scans the image's `QtCar` and `libQtCar*.so`
+   for `GUI_*Request` names (cached in `session/display-request-names.json`).
+2. Every 0.5 s it reads those names on the center display. A change after
+   connecting is a request; a value already present at connect is not.
+3. The request is written to its status values and read back. Without a route
+   the status values are the names the display actually exposes among
+   `VAPI_<name>`, `VAPI_<name>Status`, `VAPI_<name>State`, `GUI_<name>`,
+   `GUI_<name>Status`, `GUI_<name>State`, `VAPI_is<Name>` and `VAPI_<name>Active`,
+   then up to eight other `VAPI_`, `GUI_` or `LIGHT_` names in the image that
+   contain `<name>` (configuration, presence and fault names are skipped). Only a
+   status of the request's kind is paired; a flag also pairs with an `On`/`Off`
+   lamp state.
+4. Accepted values are written again when the center display restarts.
+
+Names the model, vehicle profile or a configuration override already own are
+never touched. An explicit route in `session/request-routes.json` replaces the
+pairing, maps request values to status values, or disables a request:
+
+```json
+{
+  "GUI_exampleModeRequest": {"status": ["VAPI_exampleMode"], "values": {"2": "Fast"}},
+  "GUI_ignoredRequest": null
+}
+```
+
+`session/display-requests-feedback.json` lists each request with its result
+(`accepted`, `partial`, `rejected` or `unrouted`), the last 50 requests, and
+`dropped_calls`: D-Bus errors on the private bus (`ServiceUnknown`,
+`UnknownMethod` and similar), counted by service or method, from `dbus-monitor`.
+A refused status write lists the value the display kept (`read_back`), which
+names the value it expects; an `unrouted` request lists the related names in the
+image (`related`). Either, or a dropped call, names what to route next. Status value
+names are matched, not taken from a vendor table, so check the result on the
+running UI.
 
 ## Power meter and Car off
 

@@ -23,11 +23,11 @@ def window(tmp_path, monkeypatch):
 
 def test_debug_is_below_diagnostics_and_polling_is_visible_page_only(window):
     nav = window.nav_group.buttons()
-    assert nav[nav.index(window.nav_group.button(3)) + 1].text() == 'Debug'
+    assert nav[nav.index(window.nav_group.button(3)) + 1].text() == 'Debug logs'
     window.debug_timer.timeout.emit()
     assert not any(call[0] == 'debug' for call in window.calls)
-    window.show_page(9)
-    assert window.page_title.text() == 'Debug'
+    window.show_page(8)
+    assert window.page_title.text() == 'Debug logs'
     assert window.calls[-1] == ('debug',)
     window.calls.clear()
     window.debug_panel.auto.setChecked(False)

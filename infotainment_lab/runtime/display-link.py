@@ -8,7 +8,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vehicle_services import PREFERENCES, CENTER_CHANNELS, PreferenceSync, DisplayWriter, decode_value, equivalent
+from vehicle_services import PREFERENCES, CENTER_CHANNELS, NAVIGATION_CHANNELS, PreferenceSync, DisplayWriter, decode_value, equivalent
 from display_bus import connect, call_many
 
 state = Path(os.environ['TESLA_NATIVE_STATE'])
@@ -78,7 +78,10 @@ while True:
     try:
         for short, service in (('center', 'com.tesla.CenterDisplay'), ('cluster', 'com.tesla.ClusterDisplay')):
             owner = str(bus.get_name_owner(service)) if bus.name_has_owner(service) else None
-            if owner:
+            # A new proxy introspects the display, which queues on its GUI thread: build one per owner.
+            if owner and owners.get(short) == owner and short in readers:
+                interfaces[short] = readers[short].interface
+            elif owner:
                 interfaces[short] = dbus.Interface(bus.get_object(service, '/LocalDataValue'), 'com.tesla.LocalDataValue')
             else:
                 interfaces[short] = None
@@ -93,7 +96,7 @@ while True:
                 else:
                     readers.pop(short, None)
         observed, read_errors = {}, {}
-        names = (*PREFERENCES, *CENTER_CHANNELS)
+        names = (*PREFERENCES, *CENTER_CHANNELS, *NAVIGATION_CHANNELS)
         for short, reader in readers.items():
             try:
                 observed[short] = reader.read_many(names)
@@ -114,7 +117,7 @@ while True:
                         values[name] = cv
                     fields[name] = record
                     continue
-                if name in CENTER_CHANNELS and cv is None:
+                if (name in CENTER_CHANNELS or name in NAVIGATION_CHANNELS) and cv is None:
                     record['status'] = 'waiting-value'
                     fields[name] = record
                     continue

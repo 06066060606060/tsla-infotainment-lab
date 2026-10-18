@@ -36,6 +36,17 @@ def icon(name, color=None):
         painter.drawLine(3, 11, 9, 11)
         painter.drawLine(15, 11, 21, 11)
         painter.drawLine(12, 15, 12, 21)
+    elif name == 'terminal':  # an SSH-style prompt: window frame, chevron and cursor
+        painter.drawRoundedRect(QRectF(2, 4, 20, 16), 3, 3)
+        painter.drawPolyline([QPointF(6, 9), QPointF(9.5, 12), QPointF(6, 15)])
+        painter.drawLine(12, 15, 16, 15)
+    elif name == 'bug':  # debug logs: body, head, antennae and legs
+        painter.drawRoundedRect(QRectF(7, 8, 10, 13), 5, 5)
+        painter.drawArc(QRectF(9, 3, 6, 6), 0, 180 * 16)
+        painter.drawLine(12, 10, 12, 21)
+        for y in (12, 16):
+            painter.drawLine(7, y, 3, y - 1)
+            painter.drawLine(17, y, 21, y - 1)
     elif name == 'help':
         painter.drawEllipse(QRectF(3, 3, 18, 18))
         painter.drawLine(12, 10, 12, 17)

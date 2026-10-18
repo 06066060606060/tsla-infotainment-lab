@@ -7,7 +7,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from infotainment_lab.application import MainWindow
 from infotainment_lab import lab_panels
@@ -37,7 +37,7 @@ def window(app, monkeypatch, tmp_path):
 
 
 def payloads(window, action):
-    return [json.loads(args[2]) for args in window.calls if args[0] == action]
+    return [{k: v for k, v in json.loads(args[2]).items() if k != 'single_display'} for args in window.calls if args[0] == action]
 
 
 def test_light_mode_draft_survives_rebuild_and_native_update(window):
@@ -258,6 +258,22 @@ def test_invalid_location_is_not_sent_and_still_can_be_edited(window):
     assert panel.dirty == {'latitude_deg'}
 
 
+def test_jump_to_city_sends_its_coordinates(window):
+    panel = window.services_panel
+    panel.update_status(service_session())
+    panel.market_box.setChecked(True)
+    names = [panel.place_box.itemText(i) for i in range(1, panel.place_box.count())]
+    assert names[0] == 'Paris, France' and names[-1] == 'Barcelona, Spain' and 'New York, NY' not in names
+    panel.place_box.setCurrentIndex(1)
+    panel.jump_to_place(None)
+    panel.apply()
+    sent = payloads(window, 'vehicle-services')[-1]
+    assert (sent['latitude_deg'], sent['longitude_deg']) == (48.8566, 2.3522)
+    panel.market_box.setChecked(False)
+    assert panel.place_box.itemText(1) == 'New York, NY' and 'Paris, France' not in [
+        panel.place_box.itemText(i) for i in range(panel.place_box.count())]
+
+
 def test_rebuild_preserves_browser_and_service_drafts_without_applying(window):
     window.session = service_session()
     window.update_status()
@@ -323,6 +339,32 @@ def test_os_observation_is_separate_from_lab_frames_and_does_not_start_transmiss
     panel.observation_bus.setCurrentIndex(panel.observation_bus.findData('party'))
     assert panel.raw_observation.rowCount() == 0
     assert panel.decoded_observation.rowCount() == 0
+
+
+def test_can_panel_requires_an_identifier(window):
+    window.gateway_panel.send_frame()
+    assert payloads(window, 'can') == []
+
+
+def test_can_panel_unlocks_in_one_request_and_refreshes_the_status(window):
+    panel = window.gateway_panel
+    panel.secret.setText('test-secret')
+    panel.unlock()
+    assert payloads(window, 'can')[-1] == {'action': 'unlock', 'secret': 'test-secret'}
+    panel.received('can', {'ok': True, 'data': {'unlocked': True, 'expires_in_s': 300}})
+    assert 'unlocked for 5 minutes' in panel.result.text()
+    assert window.calls[-1][0] == 'can-status'
+
+
+def test_can_panel_follows_the_profile_channels_and_starts_with_one(window):
+    panel = window.gateway_panel
+    panel.profile_box.setCurrentIndex(panel.profile_box.findData('models'))
+    panel.start_service()
+    assert window.calls[-1][0] == 'can-start' and window.calls[-1][-2:] == ('--can-profile', 'models')
+    panel.received('can-status', {'ok': True, 'data': {'service': 'running', 'profile': 'models',
+                                                       'channels': ['ch', 'pt', 'ethbus'], 'gateway': {}}})
+    assert [panel.channel.itemData(i) for i in range(panel.channel.count())] == ['ch', 'pt', 'ethbus']
+    assert 'Profile: models' in panel.state.text()
 
 
 def test_os_view_pause_filter_and_csv_keep_origin_and_decode_values(window, app):
@@ -443,7 +485,7 @@ def test_config_panel_lists_the_default_keys_and_import_compares_against_them(wi
     panel.table.selectRow(0)
     panel.set_selected('true')
     assert cfg_row(panel, 'APTRIAL_force')['value'] == 'true'
-    window.show_page(8)
+    window.show_page(7)  # Vehicle configuration is the last page now that Console lives under Diagnostics
 
 
 def test_config_layout_switch_keeps_vehicle_edits_separate(window):
@@ -749,15 +791,37 @@ def test_qemu_console_enters_the_firmware_root_in_the_guest(window, monkeypatch)
     panel.disconnect_now()
 
 
+def test_diagnostics_has_alerts_environment_and_console_tabs(window):
+    assert 'Console' not in {button.property('full_text') for button in window.nav_group.buttons()}
+    window.show_page(3)
+    tabs = window.diagnostics_tabs
+    assert [tabs.tabText(index) for index in range(tabs.count())] == ['Alerts', 'Environment', 'Console', 'Firmware files']
+    assert tabs.widget(0) is window.alert_box and tabs.widget(2) is window.console_panel
+    assert tabs.widget(1).isAncestorOf(window.log_view)  # Check environment and its results live in their own tab
+    assert not window.console_panel.connect_button.icon().isNull()
+    window.show_page(7)
+    assert window.page_title.text() == 'Vehicle configuration' and window.pages.currentWidget().widget() is window.config_panel
+
+
 def test_service_edits_apply_on_their_own_and_modes_tab_replaces_service_mode_notes(window):
     panel = window.services_panel
     panel.update_status(service_session())
     assert not hasattr(panel, "apply_button")
-    assert panel.tabs.tabText(panel.tabs.count() - 1) == "Modes"
+    assert panel.tabs.tabText(panel.tabs.count() - 2) == "Modes"
     panel.widgets["developer_mode"].setChecked(True)
     assert panel.timer.isActive()
     panel.timer.timeout.emit()
     assert payloads(window, "vehicle-services") == [{"developer_mode": True}]
+
+
+def test_alerts_tab_raises_and_clears_alerts_by_name(window):
+    panel = window.services_panel
+    assert panel.tabs.tabText(panel.tabs.count() - 1) == "Alerts"
+    panel.alert_name.setText(" VCFRONT_a097 ")
+    panel.alert_name.returnPressed.emit()
+    assert payloads(window, "vehicle-alerts") == [{"set": ["VCFRONT_a097"]}] and panel.alert_name.text() == ""
+    panel.update_status(dict(service_session(), alerts=["VCFRONT_a097"]))
+    assert panel.alert_list.text() == "Active: VCFRONT_a097"
 
 
 def test_a_new_full_import_starts_from_the_defaults_so_nothing_carries_over(window, monkeypatch):
@@ -779,3 +843,19 @@ def test_a_new_full_import_starts_from_the_defaults_so_nothing_carries_over(wind
     window.calls.clear()
     panel.apply()
     assert payloads(window, 'config-values') == [{'values': {'VAPI_carType': 'ModelX', 'APP_new': 2}, 'explicit': [], 'remove': ['APP_old']}]
+
+
+def test_can_page_routes_replies_to_the_observer_or_the_lab_gateway(window):
+    tabs = window.can_page
+    assert [tabs.tabText(i) for i in range(tabs.count())] == ['OS traffic', 'Lab gateway']
+    window.gateway_panel.unlock()
+    assert window.can_caller is window.gateway_panel
+    window.received('can', {'ok': False, 'error': 'Gateway refused'})
+    assert window.gateway_panel.result.text() == 'Gateway refused'
+    window.received('can', {'ok': True, 'data': {'unlocked': True, 'expires_in_s': 300}})
+    assert 'unlocked' in window.gateway_panel.result.text()
+    window.can_panel.observe()
+    assert window.can_caller is window.can_panel
+    window.received('can', {'ok': False, 'error': 'Observer stopped'})
+    assert 'Observer stopped' in window.can_panel.observation_state.text()
+    assert window.gateway_panel.result.text() != 'Observer stopped'

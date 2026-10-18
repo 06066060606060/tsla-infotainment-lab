@@ -116,6 +116,9 @@ def test_selected_media_is_a_separate_snapshot_and_reuses_unchanged_import(tmp_p
     copied = vm_dir / imported.lstrip('/')
     assert copied.read_bytes() == b'example-clip' and not copied.samefile(source)
     assert import_media(vm_dir, str(source), 'video') == imported
+    first = source.stat().st_mtime_ns
     source.write_bytes(b'changed-clip')
+    # Same size; a rewrite inside one filesystem timestamp tick would keep the mtime.
+    os.utime(source, ns=(first + 10**9, first + 10**9))
     assert copied.read_bytes() == b'example-clip'
     assert import_media(vm_dir, str(source), 'video') != imported

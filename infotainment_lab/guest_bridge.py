@@ -10,7 +10,7 @@ import backend
 from guest_status import session_status
 
 ACTIONS = frozenset(('status', 'controls', 'preview', 'capture', 'camera-preview',
-                     'camera', 'replay', 'vehicle-services', 'config-values', 'browser', 'steering', 'logs', 'debug', 'focus',
+                     'camera', 'replay', 'vehicle-services', 'vehicle-alerts', 'config-values', 'browser', 'steering', 'focus', 'debug',
                      'can', 'can-start', 'can-status'))
 
 
@@ -55,6 +55,8 @@ def handle(action, payload):
         return backend.set_config_values(payload)
     if action == 'vehicle-services':
         return backend.set_vehicle_services(payload)
+    if action == 'vehicle-alerts':
+        return backend.set_vehicle_alerts(payload)
     if action == 'browser':
         return backend.open_browser(payload.get('mode', 'browser'), payload.get('url'))
     if action == 'steering':
@@ -63,19 +65,14 @@ def handle(action, payload):
         return backend.can_call(payload)
     if action == 'can-start':
         return backend.can_start(payload.get('backend', 'auto'), bool(payload.get('create_interfaces')),
-                                 int(payload.get('port', 20200)), bool(payload.get('restart')))
+                                 int(payload.get('port', 20200)), bool(payload.get('restart')),
+                                 payload.get('profile', 'lab'))
     if action == 'can-status':
         return backend.can_status()
     if action == 'focus':
         return backend.focus_display(payload.get('display', 'center'))
     if action == 'debug':
         return backend.debug_logs.snapshot(backend.DATA / 'session', backend.UNIT, guest=True)
-    logs = {}
-    for path in (backend.DATA / 'session').glob('*.log'):
-        with path.open('rb') as stream:
-            stream.seek(max(0, path.stat().st_size - 12000))
-            logs[path.name] = stream.read(12000).decode(errors='replace')
-    return {'logs': logs}
 
 
 if __name__ == '__main__':

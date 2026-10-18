@@ -108,6 +108,10 @@ those channels and the infotainment (Ethernet) side.
   for this project. Names begin with `LAB_`. A value decoded from them proves
   what this lab encoded and nothing about a real vehicle. Load your own `.dbc`
   when you have one you are entitled to use.
+- The `model3` and `models` bus profiles use **public, community
+  reverse-engineered** databases (see below). They are downloaded at a pinned
+  commit into your data directory on first use and are never committed here.
+  They describe frame layouts only.
 - Nothing here reaches a vehicle. `vcan` is a virtual kernel interface, the
   software hub stays inside the process tree, and the Ethernet bridge binds the
   loopback only.
@@ -118,7 +122,8 @@ those channels and the infotainment (Ethernet) side.
 | --- | --- |
 | `can_frames.py` | Frame model, DBC-style signal packing, rolling counter, CRC-8 |
 | `can_bus.py` | Transport: SocketCAN over `vcan`, or an in-process software hub |
-| `can_database.py` | The `LAB_*` frame table and a minimal `.dbc` reader |
+| `can_database.py` | The `LAB_*` frame table, a `.dbc` reader and a tesla_can_signals JSON reader |
+| `can_profiles.py` | Bus profiles: channels, pinned public databases, download and load |
 | `gateway.py` | Routes, filters, the unlock gate, and the loopback Ethernet bridge |
 | `vehicle_can.py` | Projects `Simulation` and `VehicleServices` onto periodic frames |
 | `can_service.py` | The loop: transport, gateway, periodic transmitter, control socket |
@@ -126,7 +131,52 @@ those channels and the infotainment (Ethernet) side.
 Lab channel keys remain `veh` (displayed as BODY / VH), `ch` (CHASSIS),
 and `party` (PARTY). Their LAB frame roles are an emulation convention, not a
 description of those physical vehicle buses. With SocketCAN they map
-to `vcan0`, `vcan1` and `vcan2`.
+to `vcan0`, `vcan1` and `vcan2`. Other profiles open other channels; see below.
+
+## Bus profiles
+
+Choose one in the panel or with `can-start --can-profile NAME`. Starting with a
+different profile replaces the running service.
+
+| Profile | Channels | Databases |
+| --- | --- | --- |
+| `lab` (default) | `veh`, `ch`, `party` | the built-in `LAB_*` frames |
+| `model3` | `veh`, `ch`, `party` | [opendbc](https://github.com/commaai/opendbc) (MIT) `tesla_model3_vehicle.dbc` on `veh`, `tesla_model3_party.dbc` on `party`; `LAB_*` frames fill the rest |
+| `models` | `ch`, `pt`, `bdy`, `bft`, `obd`, `ethbus` | [tesla_can_signals](https://github.com/talas9/tesla_can_signals) Model S buses plus opendbc `tesla_can.dbc` (CH) and `tesla_powertrain.dbc` (PT) |
+
+Files land in `~/.local/share/tsla-infotainment-lab/can-databases/<repo>/<commit>/`.
+tesla_can_signals has no licence file, which is why it is fetched to your
+machine rather than shipped. Where both sources define an identifier, opendbc's
+fuller layout wins and keeps tesla_can_signals' cycle time. `ethbus` is the
+gateway's ETH bus towards the MCU, where the gateway repacks chassis and
+powertrain signals under new identifiers.
+
+What the service does with a profile:
+
+- Every periodic definition is transmitted: about 350 frames/s for `model3`
+  and 1,300 for `models`. Multiplexed frames step through their pages. Counters
+  roll, and checksums use the additive Tesla sum from opendbc. tesla_can_signals
+  names its checksum signals but not the algorithm, so that sum is an
+  assumption there; several of its files also leave the checksum signal
+  undefined, and those frames go out without one.
+- Signals with a binding in `vehicle_can.SIGNAL_BINDINGS` (gear, speed with MPH
+  conversion, pedal, brake, steering, stalk, indicator lamps, low and high
+  beams, door latches, temperature set points, ambient temperature) follow the
+  session state. Others carry the database's start value, or raw zero.
+- A frame that crosses the gateway or is injected on a channel is decoded, and
+  bound signals flow back into `controls.json` and `vehicle-services.json`, as
+  with the `LAB_*` frames. A frame carries physical quantities, so injecting
+  `DI_systemStatus` with only the gear set also sets throttle to zero.
+- Routes are generated: every defined frame on a channel may be read from the
+  Ethernet side, and frames the infotainment sends (a `UI_`/`MCU_` name, or an
+  `ETH`, `MCU` or `UI` sender) may be written, but only while unlocked.
+
+The `models` profile needs six interfaces for SocketCAN. Run `can-setup` again
+after updating; without them the service uses the software hub.
+
+`bruvv/tesla-can-explorer` lists 1,728 frames and their enum names from
+MCU2 firmware, but no bit positions, so it cannot drive a transmitter and is
+not a profile source.
 
 ## Routing
 
@@ -134,11 +184,11 @@ Read paths are open, and anything that ends on a vehicle channel is gated:
 
 | Route | Identifiers | Unlock required |
 | --- | --- | --- |
-| `veh` → Ethernet | `0x102`, `0x118`, `0x129`, `0x2E5`, `0x3D8`, `0x3F5` | no |
+| `veh` → Ethernet | `0x102`, `0x118`, `0x129`, `0x2E5`, `0x3D8`, `0x3F5`, `0x5E1` | no |
 | `ch` → Ethernet | `0x352` | no |
 | `party` → Ethernet | `0x651` | no |
 | Ethernet → `veh` | `0x2E5`, `0x3F5` | **yes** |
-| Ethernet → `party` | `0x641` | **yes** |
+| Ethernet → `party` | `0x641` | **yes**, and Service Mode on |
 | `veh` → `ch` mirror | `0x3F5` | no |
 
 A frame outside a route's filter is dropped and counted. A checksummed frame
@@ -149,12 +199,51 @@ An accepted inbound `LAB_climate` or `LAB_lighting` frame is turned back into a
 `VehicleServices` patch, so a write that crosses the gateway shows up in the
 desktop session exactly as a UI change would.
 
+## Service Mode
+
+The gateway follows the session's Service Mode (`GUI_serviceMode`), whether it
+was entered on the center display or with the Modes switch:
+
+- Diagnostic requests (`LAB_gatewayRequest`, `0x641` to `party`) pass only while
+  the gateway is unlocked **and** Service Mode is on. Otherwise they are refused
+  with `the gateway session is locked` or `Service Mode is off`.
+- `LAB_vehicleModes` (`0x5E1` on `veh`, every 500 ms) carries the service,
+  developer, factory, transport, showroom and dyno mode flags. It is read-only;
+  Service Mode is entered and left on the display, not over CAN. In the `model3`
+  and `models` profiles a database frame with the same identifier replaces it.
+- Tasks run from the firmware's Service Mode panel are offered to the gateway as
+  `LAB_gatewayRequest` frames by the Odin stand-in, and the task result names the
+  gateway's decision. No ECU answers; see
+  [Service Mode](vehicle-services.md#service-mode).
+- Status reports `gateway.service_mode`; the CAN panel shows it next to the lock.
+
+The firmware's own gateway-lock state follows the lab unlock. The Service Mode
+page does not read a single "unlocked" data value; it derives that state from the
+gateway signals `GTW_diagLevel` and `GTW_diagRemainingSeconds` on `QtCarDvServer`:
+it treats the gateway as unlocked while `GTW_diagLevel` is `LEVEL_SERVICE` with at
+least ten seconds left (or `LEVEL_FACTORY`/`LEVEL_DIAG_LINK_ACTIVE`), and its
+"Confirm User Presence" dialog turns to **Unlocked** and counts down
+`GTW_diagRemainingSeconds`. When the lab gateway is unlocked, the CAN service
+records the state (unlocked and the absolute expiry) in
+`session/gateway-lock.json`, and keep-awake projects `GTW_diagLevel =
+LEVEL_SERVICE` and the remaining seconds onto both `QtCarDvServer` and the
+displays, so the panel and the center display's banner follow the panel's
+**Unlock gateway** button. The countdown is derived from the expiry time, so it
+stays current between the service's writes; the locked default is
+`LEVEL_NORMAL_OPERATION`.
+
+This is lab behaviour, not a vehicle's: the unlock is the lab's own handshake and
+does not model the real user-presence conditions, so the panel's own unlock is
+what the displays follow.
+
 ## Where the state comes from
 
 The desktop session owns the state the displays receive: `session/controls.json`
 for driving inputs and `session/vehicle-services.json` for everything else. The
-service follows both files, so a trace matches what is on screen, including
-while a recorded drive is playing. Turn that off with
+service follows both files, plus `session/vehicle-services-feedback.json` for
+changes made on the displays themselves (such as entering Service Mode), adopted
+only when that report was built on the current desktop file, so a trace
+matches what is on screen, including while a recorded drive is playing. Turn that off with
 `{"action": "state", "follow_session": false}` to drive the frames from the
 panel alone.
 
@@ -194,14 +283,14 @@ the service is a long-lived process and keeps running the code it started with.
 One privileged step, only if you want real SocketCAN interfaces:
 
 ```bash
-sudo python3 infotainment_lab/backend.py can-setup      # creates vcan0..vcan3
+sudo python3 infotainment_lab/backend.py can-setup      # creates vcan0..vcan5
 ```
 
 Without it, the service falls back to the software hub and everything still
 works. Start the service and inspect it:
 
 ```bash
-python3 infotainment_lab/backend.py can-start --can-backend auto
+python3 infotainment_lab/backend.py can-start --can-backend auto --can-profile model3
 python3 infotainment_lab/backend.py can-status
 ```
 
@@ -221,18 +310,12 @@ python3 infotainment_lab/backend.py can \
               "frame": {"channel": "veh", "id": "0x3F5", "data": "01 00"}}'
 ```
 
-Unlock, using the lab secret:
+Unlock. The backend runs the challenge and response in one call; the panel's
+**Unlock gateway** button does the same:
 
 ```bash
-python3 - <<'PY'
-import hashlib, hmac, json, subprocess
-run = lambda p: json.loads(subprocess.run(
-    ['python3', 'infotainment_lab/backend.py', 'can', '--payload', json.dumps(p)],
-    capture_output=True, text=True).stdout.splitlines()[-1])
-challenge = bytes.fromhex(run({'action': 'challenge'})['data']['challenge'])
-response = hmac.new(b'infotainment-lab', challenge, hashlib.sha256).hexdigest()[:32]
-print(run({'action': 'unlock', 'response': response}))
-PY
+python3 infotainment_lab/backend.py can \
+  --payload '{"action": "unlock", "secret": "infotainment-lab"}'
 ```
 
 Load your own database:
@@ -242,19 +325,30 @@ python3 infotainment_lab/backend.py can \
   --payload '{"action": "load-dbc", "path": "~/mine.dbc", "channel": "veh", "period_ms": 100}'
 ```
 
+`load-dbc` also reads a tesla_can_signals `.json` file. The channel must be one
+the running profile opens. Loaded frames are transmitted, decoded and routed
+like a profile's.
+
 With SocketCAN selected, ordinary tools see the same traffic:
 
 ```bash
-candump vcan0 vcan1 vcan2 vcan3
+candump vcan0 vcan1 vcan2
 cansend vcan0 3F5#0100
 ```
+
+**CAN & gateway** in the sidebar has two tabs. **OS traffic** observes the running firmware and holds
+the frame injection rules. **Lab gateway** starts the service with a transport and a bus
+profile, shows the transport, profile, lock state (with the time left) and
+per-channel counters, performs the unlock handshake, sends a
+frame either through the gateway or straight onto a channel, and lists recent
+frames with decoded signals.
 
 ## Ethernet bridge
 
 UDP on `127.0.0.1:20200`. Binary messages carry one frame:
 
 ```
-byte 0    channel index (veh, ch, party)
+byte 0    channel index, in the profile's channel order (lab: veh, ch, party)
 byte 1    flags (bit 0: extended identifier)
 bytes 2-5 identifier, big endian
 byte 6    payload length (0-8)
@@ -276,7 +370,7 @@ project. Actions: `status`, `send`, `trace`, `challenge`, `unlock`, `lock`,
 ## Tests
 
 ```bash
-python3 -m pytest tests/test_can_frames.py tests/test_gateway.py tests/test_can_service.py
+python3 -m pytest tests/test_can_frames.py tests/test_gateway.py tests/test_can_service.py tests/test_can_profiles.py
 ```
 
 They run on the software hub: no kernel module, no privileges, no hardware.

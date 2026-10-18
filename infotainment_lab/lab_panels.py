@@ -7,11 +7,41 @@ import shlex
 import os
 from PySide6.QtCore import Qt, QProcess, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QApplication, QPushButton, QSlider, QTabWidget, QVBoxLayout, QWidget, QFrame,
+    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QApplication, QPushButton, QSlider, QListWidget, QStackedWidget, QVBoxLayout, QWidget, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
 
 from .material_widgets import MaterialSwitch as QCheckBox
 from .vehicle_services import FIELD_SPECS, VehicleServices
+from .places import PLACES
+from . import vehicle_options
+
+
+class SideTabs(QWidget):
+    """A category list beside the pages: QTabWidget's tab API, for more tabs than a row can hold."""
+
+    def __init__(self):
+        super().__init__()
+        self.names, self.pages = QListWidget(), QStackedWidget()
+        self.names.setFixedWidth(190)
+        self.names.setAccessibleName('Categories')
+        self.names.currentRowChanged.connect(self.pages.setCurrentIndex)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.names)
+        row.addWidget(self.pages, 1)
+
+    def insertTab(self, index, page, text):
+        self.pages.insertWidget(index, page)
+        self.names.insertItem(index, text)
+        if self.names.currentRow() < 0: self.names.setCurrentRow(0)
+
+    def addTab(self, page, text):
+        self.insertTab(self.names.count(), page, text)
+
+    def count(self): return self.names.count()
+    def tabText(self, index): return self.names.item(index).text()
+    def currentIndex(self): return self.names.currentRow()
+    def setCurrentIndex(self, index): self.names.setCurrentRow(index)
 
 
 class Panel(QFrame):
@@ -31,6 +61,8 @@ class Panel(QFrame):
         return item
 
     def send(self, backend_action, **payload):
+        if backend_action == 'config-values':
+            payload['single_display'] = self.window.overview.single_display
         return self.window.bridge.call(backend_action, '--payload', json.dumps(payload))
 
 
@@ -83,7 +115,7 @@ class BrowserPanel(Panel):
         elif media == 'waiting-services':
             self.media_health.setText('Starting native music services…')
         else:
-            self.media_health.setText('Music services are running. Open Spotify in the center display to check login and playback.')
+            self.media_health.setText('Music services are running. Sources that sign in directly with their provider, such as Amazon Music, can log in. Spotify and Apple Music sign in through Tesla\'s servers, which the lab does not reach.')
 
 
 class ReplayPanel(Panel):
@@ -172,7 +204,7 @@ class ServicesPanel(Panel):
         self.timer.setSingleShot(True)
         self.timer.setInterval(300)
         self.timer.timeout.connect(self.apply)
-        self.tabs = QTabWidget()
+        self.tabs = SideTabs()
         self.layout.addWidget(self.tabs)
         defaults = VehicleServices().as_dict()
         for group, en in (('climate', 'Climate'), ('closures', 'Doors'), ('lights', 'Lights'),
@@ -183,6 +215,12 @@ class ServicesPanel(Panel):
             form = QFormLayout(page)
             form.setContentsMargins(20, 24, 20, 24)
             form.setSpacing(14)
+            if group == 'navigation':
+                self.place_box = QComboBox()
+                self.place_box.setAccessibleName('Jump to')
+                self.place_box.setToolTip('Moves the simulated GPS to a big city. Navigation needs a map image that covers it (EU, or TeslaMaps for the US).')
+                self.place_box.activated.connect(self.jump_to_place)
+                form.addRow('Jump to', self.place_box)
             if group == 'parking':
                 notice = QLabel('Local simulation: adjustable ultrasonic distances only. No camera detection or automatic steering. '
                                 'In Vehicle config, enable FEATURE_parkAssistEnabled, select Valeo or Tesla for '
@@ -231,6 +269,30 @@ class ServicesPanel(Panel):
                 self.results[name] = result
                 form.addRow(spec['label'], row)
             self.tabs.addTab(page, en)
+        self.tabs.insertTab(0, self.vehicle_page(window), 'Vehicle')
+        page = QWidget()
+        box = QVBoxLayout(page)
+        box.setContentsMargins(20, 24, 20, 24)
+        box.setSpacing(14)
+        self.alert_name = QLineEdit()
+        self.alert_name.setPlaceholderText('Alert name, for example BMS_w001_HW_Over_Current')
+        self.alert_name.setAccessibleName('Alert name')
+        self.alert_name.returnPressed.connect(lambda: self.change_alert('set'))
+        row = QHBoxLayout()
+        row.addWidget(self.alert_name, 1)
+        row.addWidget(window.button('Raise', lambda: self.change_alert('set')))
+        row.addWidget(window.button('Clear', lambda: self.change_alert('clear')))
+        row.addWidget(window.button('Clear all', lambda: self.send('vehicle-alerts', clear_all=True)))
+        box.addLayout(row)
+        self.alert_list = QLabel('No active alerts.')
+        self.alert_list.setWordWrap(True)
+        box.addWidget(self.alert_list)
+        note = QLabel('Raised alerts are served as the vehicle alert daemon would and appear in the firmware Service Mode panel. Nothing is sent to a vehicle.')
+        note.setObjectName('muted')
+        note.setWordWrap(True)
+        box.addWidget(note)
+        box.addStretch()
+        self.tabs.addTab(page, 'Alerts')
         spin = self.widgets['power_level']
         spin.setSingleStep(1)
         self.power_slider = QSlider(Qt.Horizontal)
@@ -240,6 +302,11 @@ class ServicesPanel(Panel):
         self.feedback = self.text('', 'notice')
         self.text('The local model covers climate, body indicators, energy, audio, trip data and simulated tire pressure. Native tire pressure follows the selected display units. Connected accounts, physical vehicle hardware and live traffic require their own services.')
         self.layout.addStretch()
+
+    def change_alert(self, action):
+        name = self.alert_name.text().strip()
+        if name and self.send('vehicle-alerts', **{action: [name]}):
+            self.alert_name.clear()
 
     def sync_power(self):
         """Mirror the power_level field onto the Drive tab slider without re-sending it."""
@@ -260,8 +327,32 @@ class ServicesPanel(Panel):
                 payload[name] = self.field_value(name)
             if payload and self.send('vehicle-services', **payload):
                 self.pending = payload
+                if payload.keys() & {'latitude_deg', 'longitude_deg'} and not self.window.maps_box.currentData():
+                    self.window.show_message('No map image is loaded, so navigation may not work at this location.', True)
         except ValueError:
             self.window.show_message('Enter a valid number for location and heading.', True)
+
+    def show_places(self, eu):
+        """The Jump to list follows the market switch: EU cities with EU market on, US cities otherwise."""
+        self.place_box.clear()
+        self.place_box.addItem('Choose a city…', None)
+        for region, name, lat, lon in PLACES:
+            if region == ('EU' if eu else 'US'):
+                self.place_box.addItem(name, (lat, lon))
+
+    def jump_to_first_place(self):
+        """A market switch moves the car to the new market's first city, so the map does not loop between regions."""
+        if self.place_box.count() > 1:
+            self.place_box.setCurrentIndex(1)
+            self.jump_to_place(None)
+            self.apply()
+
+    def jump_to_place(self, _):
+        place = self.place_box.currentData()
+        if place:
+            for name, value in zip(('latitude_deg', 'longitude_deg'), place):
+                self.widgets[name].setText(str(value))
+                self.touch(name)
 
     def field_changed(self, name):
         self.touch(name)
@@ -346,6 +437,8 @@ class ServicesPanel(Panel):
             states = {'accepted': ('Applied'), 'partial': ('Partial'), 'unsupported': ('Local only'), 'local-model': ('Local only'), 'mismatch': ('Not applied'), 'rejected': ('Not accepted')}
             self.results[name].setText(states.get(result, '—') if live else '—')
         self.sync_power()
+        alerts = session.get('alerts', [])
+        self.alert_list.setText('Active: ' + ', '.join(alerts) if alerts else 'No active alerts.')
         link = session.get('display_link', {})
         connected = link.get('connected', {})
         synced = live and connected.get('center') and connected.get('cluster')
@@ -353,6 +446,231 @@ class ServicesPanel(Panel):
             self.feedback.setText('Center ↔ Instruments' + '  ·  ' + str(link.get('synchronized_count', 0)) + ' shared fields synchronized')
         else:
             self.feedback.setText('Waiting for both displays to synchronize.' if live else 'Start a device to use vehicle services.')
+
+    def vehicle_page(self, window):
+        """Model, paint, wheels, Autopilot hardware and market: car config, so Apply confirms and restarts the device."""
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(20, 24, 20, 24)
+        form.setSpacing(14)
+        self.vehicle_boxes = {}
+        for key, label, items in (('model', 'Model', list(vehicle_options.MODELS)),
+                                  ('paint', 'Paint', list(vehicle_options.PAINT)),
+                                  ('wheel', 'Wheels', list(vehicle_options.WHEELS)),
+                                  ('autopilot', 'Autopilot hardware', list(vehicle_options.AUTOPILOT))):
+            box = QComboBox()
+            for item in items:
+                box.addItem(vehicle_options.AUTOPILOT.get(item, item) + (f' ({item})' if key == 'autopilot' else ''), item)
+            box.setAccessibleName(label)
+            self.vehicle_boxes[key] = box
+            form.addRow(label, box)
+        # A model change picks that model's stock wheel.
+        self.vehicle_boxes['model'].currentIndexChanged.connect(lambda _: self.vehicle_boxes['wheel'].setCurrentIndex(
+            self.vehicle_boxes['wheel'].findData(vehicle_options.DEFAULT_WHEEL[self.vehicle_boxes['model'].currentData()])))
+        self.vehicle_boxes['wheel'].setCurrentIndex(self.vehicle_boxes['wheel'].findData('Pinwheel18'))
+        self.vehicle_boxes['paint'].setCurrentIndex(self.vehicle_boxes['paint'].findData('UltraRed'))
+        self.vehicle_boxes['autopilot'].setCurrentIndex(self.vehicle_boxes['autopilot'].findData('TeslaAP3'))
+        self.market_box = QCheckBox('EU market')
+        self.market_box.setToolTip('EU car settings (ES, km, °C, bar, R79, English GB) or North American (US, miles, °F, psi, English US). Takes effect on Apply and restarts the device.')
+        self.market_box.toggled.connect(window.market_edited)
+        window.market_box = self.market_box
+        self.market_box.toggled.connect(self.show_places)
+        self.show_places(self.market_box.isChecked())
+        form.addRow(self.market_box)
+        form.addRow(window.button('Apply', lambda: window.vehicle_changed(
+            {**{key: box.currentData() for key, box in self.vehicle_boxes.items()}, 'market': self.market_box.isChecked()})))
+        note = QLabel('Model 3 and Model Y only on the single-display image. Autopilot hardware sets the driver-assist profile; '
+                      'Service Mode\'s own hardware readout needs a value the firmware does not supply here.')
+        note.setObjectName('muted')
+        note.setWordWrap(True)
+        form.addRow(note)
+        return page
+
+    def update_vehicle(self, current):
+        for box, value in zip(self.vehicle_boxes.values(), current):
+            if value is not None and box.findData(value) >= 0 and not box.hasFocus():
+                box.blockSignals(True)
+                box.setCurrentIndex(box.findData(value))
+                box.blockSignals(False)
+
+
+class GatewayPanel(Panel):
+    """Read and write frames through the emulated gateway.
+
+    The gateway starts locked: write requests from this panel are refused until
+    the lab unlock handshake succeeds. The secret below is this lab's own shared
+    value, not a vehicle credential.
+    """
+
+    CHANNELS = (('veh', 'VEH · vehicle'), ('ch', 'CHASSIS'),
+                ('party', 'PARTY · diagnostic'))
+    PROFILES = (('lab', 'Lab frames'),
+                ('model3', 'Model 3 · opendbc'),
+                ('models', 'Model S/X · opendbc + tesla_can_signals'))
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.since = 0
+        self.text('CAN bus and gateway', 'subtitle')
+        self.text('An emulated gateway routes frames between the local channels and the infotainment Ethernet side. '
+                  'Definitions and identifiers are this lab’s own; a decoded value is not evidence about a vehicle. '
+                  'Diagnostic requests, including Service Mode tasks, pass only while unlocked and in Service Mode.')
+        row = QHBoxLayout()
+        self.backend_box = QComboBox()
+        for key, en in (('auto', 'Automatic transport'),
+                            ('socketcan', 'SocketCAN (vcan)'),
+                            ('software', 'Software hub')):
+            self.backend_box.addItem(en, key)
+        self.backend_box.setAccessibleName('CAN transport')
+        row.addWidget(self.backend_box)
+        self.profile_box = QComboBox()
+        for key, en in self.PROFILES:
+            self.profile_box.addItem(en, key)
+        self.profile_box.setAccessibleName('Bus profile')
+        self.profile_box.setToolTip('Public signal databases are downloaded at a pinned commit on first start.')
+        row.addWidget(self.profile_box)
+        row.addWidget(window.button('Start service', self.start_service))
+        row.addWidget(window.button('Refresh', self.refresh))
+        self.layout.addLayout(row)
+
+        unlock_row = QHBoxLayout()
+        self.secret = QLineEdit('infotainment-lab')
+        self.secret.setAccessibleName('Gateway lab secret')
+        self.secret.setPlaceholderText('Gateway lab secret')
+        unlock_row.addWidget(self.secret, 1)
+        unlock_row.addWidget(window.button('Unlock gateway', self.unlock))
+        unlock_row.addWidget(window.button('Lock', self.lock))
+        self.layout.addLayout(unlock_row)
+        self.state = self.text('Start the service to see the channels.', 'notice')
+
+        send_row = QHBoxLayout()
+        self.channel = QComboBox()
+        for key, en in self.CHANNELS:
+            self.channel.addItem(en, key)
+        self.channel.setAccessibleName('Channel')
+        send_row.addWidget(self.channel)
+        self.identifier = QLineEdit()
+        self.identifier.setPlaceholderText('Identifier, for example 0x2E5')
+        self.identifier.setAccessibleName('Frame identifier')
+        send_row.addWidget(self.identifier)
+        self.payload = QLineEdit()
+        self.payload.setPlaceholderText('Payload bytes, for example 21 04 00')
+        self.payload.setAccessibleName('Frame payload')
+        send_row.addWidget(self.payload, 1)
+        self.origin = QComboBox()
+        for key, en in (('ethernet', 'Through the gateway'), ('bus', 'Inject on the channel')):
+            self.origin.addItem(en, key)
+        self.origin.setAccessibleName('Write path')
+        send_row.addWidget(self.origin)
+        send_row.addWidget(window.button('Send frame', self.send_frame))
+        self.layout.addLayout(send_row)
+        self.result = self.text('', 'notice')
+
+        self.trace = QLineEdit()
+        self.trace.setReadOnly(True)
+        self.trace.setAccessibleName('Last decoded frame')
+        self.layout.addWidget(self.trace)
+        self.frames = QLabel('')
+        self.frames.setObjectName('muted')
+        self.frames.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.frames.setWordWrap(False)
+        self.layout.addWidget(self.frames)
+        self.layout.addStretch()
+
+    # -- requests ---------------------------------------------------------
+    def request(self, payload):
+        self.window.can_caller = self
+        return self.window.bridge.call('can', '--payload', json.dumps(payload))
+
+    def start_service(self):
+        self.result.setText('Starting the CAN service…')
+        self.window.bridge.call('can-start', '--can-backend', self.backend_box.currentData(),
+                                '--can-profile', self.profile_box.currentData())
+
+    def refresh(self):
+        self.window.bridge.call('can-status')
+        self.request({'action': 'trace', 'limit': 40, 'since': self.since})
+
+    def unlock(self):
+        # One request: the worker runs the challenge and response itself.
+        self.request({'action': 'unlock', 'secret': self.secret.text()})
+
+    def lock(self):
+        self.request({'action': 'lock'})
+
+    def send_frame(self):
+        identifier = self.identifier.text().strip()
+        if not identifier:
+            self.result.setText('Enter an identifier first.')
+            return
+        self.request({'action': 'send', 'origin': self.origin.currentData(),
+                      'frame': {'channel': self.channel.currentData(), 'id': identifier,
+                                'data': self.payload.text().strip()}})
+
+    # -- responses --------------------------------------------------------
+    def received(self, action, result):
+        if action not in ('can', 'can-start', 'can-status'):
+            return
+        if not result.get('ok'):
+            self.result.setText(result.get('error', ''))
+            return
+        data = result.get('data', {})
+        if 'frames' in data:
+            self.render_frames(data['frames'])
+            self.since = data.get('now', self.since)
+            return
+        if 'allowed' in data:
+            reason = data.get('reason') or ''
+            self.result.setText('Routed through ' + str(data.get('route'))
+                                if data['allowed'] else 'Refused: ' + reason)
+            return
+        if 'unlocked' in data and 'gateway' not in data:
+            self.result.setText(f"Gateway unlocked for {data.get('expires_in_s', 0) // 60} minutes."
+                                if data['unlocked'] else 'Gateway locked.')
+            self.window.bridge.call('can-status')  # The status line still shows the old state.
+            return
+        self.render_status(data)
+
+    def render_status(self, data):
+        if data.get('service') != 'running':
+            self.state.setText('The CAN service is stopped.')
+            return
+        gateway = data.get('gateway', {})
+        counters = gateway.get('counters', {})
+        channels = data.get('channels') or [key for key, _ in self.CHANNELS]
+        if channels != [self.channel.itemData(i) for i in range(self.channel.count())]:
+            labels = dict(self.CHANNELS)
+            self.channel.clear()
+            for key in channels:
+                self.channel.addItem(labels.get(key, key.upper()), key)
+        channels = ', '.join(f"{item['channel']}:{item['received']}" for item in gateway.get('channels', []))
+        if 'follow_session' not in data:
+            source = 'older service running · restart it'
+        elif data.get('follow_session'):
+            source = 'following the session'
+        else:
+            source = 'panel state only'
+        self.state.setText(' · '.join(filter(None, (
+            'Transport: ' + str(gateway.get('backend')),
+            'Profile: ' + str(data.get('profile', 'lab')),
+            source,
+            f"Unlocked · {gateway.get('unlock_expires_in_s', 0)} s left" if gateway.get('unlocked') else 'Locked',
+            'Service Mode on' if gateway.get('service_mode') else 'Service Mode off',
+            channels,
+            'routed ' + str(counters.get('routed', 0)),
+            'blocked ' + str(counters.get('blocked', 0) + counters.get('unknown', 0))))))
+
+    def render_frames(self, frames):
+        if not frames:
+            return
+        lines = []
+        for item in frames[-16:]:
+            signals = item.get('signals') or {}
+            summary = ' '.join(f'{name}={value}' for name, value in list(signals.items())[:4])
+            lines.append(f"{item['channel']:<5} {item['id_hex']:>4}  {item['data']:<24} "
+                         f"{item.get('name', '')} {summary}")
+        self.frames.setText('\n'.join(lines))
+        self.trace.setText(lines[-1].strip())
 
 
 class CanPanel(Panel):
@@ -546,6 +864,7 @@ class CanPanel(Panel):
 
     # -- requests ---------------------------------------------------------
     def request(self, payload):
+        self.window.can_caller = self
         return self.window.bridge.call('can', '--payload', json.dumps(payload))
 
     def received(self, action, result):
@@ -653,7 +972,6 @@ class ConsolePanel(Panel):
         self.output.setOverwriteMode(True)  # block caret, like a terminal
         self.output.setLineWrapMode(QPlainTextEdit.NoWrap)
         self.output.setMinimumHeight(360)
-        self.output.setStyleSheet('font-family: monospace;')
         self.output.setAccessibleName('Console')
         self.output.typed.connect(self.send_bytes)
         self.layout.addWidget(self.output, 1)

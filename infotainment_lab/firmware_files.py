@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import tempfile
@@ -124,22 +125,77 @@ def remove(data, identifier, target):
     return entries(upper)
 
 
-def mount_view(base, upper, mount, run):
-    """Read-only branches: replacements win, everything else comes from SquashFS."""
+STYLES = PurePosixPath('usr/tesla/UI/assets/styles-M3.conf')
+# The firmware bottom-aligns these panels on the 1200 px screen, so their last 100 px sit behind
+# the bottom bar and a strip is left above them. 100 px taller moves each top edge up by that much.
+# The HVAC panel is placed by fixed Y offsets instead, which move up by the same 100 px.
+PANEL_HEIGHTS = (
+    (re.compile(r'^ControlPanelHeight = "Height:1040;"[ \t]*$', re.M), 'ControlPanelHeight = "Height:1140;"'),
+    (re.compile(r'^(ClimateControlPanel = "HVACPanelSize; X:0; Y:)360(; BackgroundColor:transparent;")[ \t]*$', re.M), r'\g<1>260\2'),
+    (re.compile(r'^(BackgroundView = "CenterDisplayWidth; X:0; Y:)360(; Height:680;")[ \t]*$', re.M), r'\g<1>260\2'),
+    (re.compile(r'^(ViewSwitchStyle = "AlignItems:center; JustifyContent:center; HVAC/HVACViewWidth; X:0; Y:)380(; PositionType:absolute;")[ \t]*$', re.M), r'\g<1>280\2'),
+    (re.compile(r'^(KeepClimatePopupStyleCommon = "BackgroundColor:transparent; X:608; Y:)230(; PositionType:absolute; Height:100; Width:708;")[ \t]*$', re.M), r'\g<1>130\2'),
+)
+
+
+COMMON = PurePosixPath('usr/tesla/UI/assets/styles-common.conf')
+# Neither window padding nor margin moves these panels, but their scrolling areas fill the window's
+# height, so the lists ended under the bottom bar. Leave 100 px at the bottom of each.
+SCROLL_AREAS = (
+    (STYLES, re.compile(r'^(PageLayout = "ControlsPanel/ControlsPanelWidth; FlexDirection:column; JustifyContent:FlexStart; Padding:0,40,0,)0(; Margin:20,0,20,0;)', re.M), r'\g<1>100\2'),
+    (STYLES, re.compile(r'^(TabLayout \+= "Padding:0,25;)( TabWidth:420; TabHeight:71;")[ \t]*$', re.M), r'\g<1> Margin:0,0,0,100;\2'),
+    (COMMON, re.compile(r'^ScrollableSettingsPanel = "Flex:1; MaxHeight:800; Margin:0,20,20,20;"[ \t]*$', re.M),
+     'ScrollableSettingsPanel = "Flex:1; MaxHeight:800; Margin:0,20,20,120;"'),
+)
+
+
+def layout_layer(base, directory):
+    """A layer for single-display sessions that lifts the Controls and HVAC panels to the screen's usable height.
+
+    Each value is changed only when this build's file has exactly the expected line. Returns the
+    layer directory, or None when no value matched.
+    """
+    texts, changed = {}, 0
+    for member, pattern, line in (*((STYLES, *entry) for entry in PANEL_HEIGHTS), *SCROLL_AREAS):
+        if member not in texts:
+            try:
+                texts[member] = (Path(base) / member).read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError):
+                texts[member] = None
+        if texts[member] is not None:
+            texts[member], count = pattern.subn(line, texts[member])
+            changed += count == 1
+    if not changed:
+        return None
+    directory = private_directory(directory)
+    for member, text in texts.items():
+        if text is None:
+            continue
+        target = directory / member
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.unlink(missing_ok=True)  # the previous copy is read-only
+        target.write_text(text, encoding='utf-8')
+        target.chmod(0o444)
+    return directory
+
+
+def mount_view(base, upper, mount, run, layers=()):
+    """Read-only branches: replacements win, then the lab's layers, then the SquashFS."""
     base, upper, mount = map(Path, (base, upper, mount))
-    if not entries(upper):
+    layers = [Path(layer) for layer in layers if layer]
+    if not entries(upper) and not layers:
         return base
     if not shutil.which('fuse-overlayfs'):
         raise RuntimeError('Install fuse-overlayfs with Prepare computer to use firmware replacements.')
     # Branch paths use separators even though subprocess receives structured argv.
-    if any(any(char in str(path) for char in ':=,') for path in (base, upper)):
+    if any(any(char in str(path) for char in ':=,') for path in (base, upper, *layers)):
         raise ValueError('Replacement mount paths must not contain colon, equals or comma characters.')
     if mount.is_symlink():
         raise ValueError('The firmware view must not be a symbolic link.')
     mount.mkdir(parents=True, exist_ok=True)
     if os.path.ismount(mount) or any(mount.iterdir()):
         raise RuntimeError('Release the previous firmware view before starting a session.')
-    run(['fuse-overlayfs', '-o', f'ro,nosuid,nodev,lowerdir={upper}:{base}', mount], timeout=30)
+    run(['fuse-overlayfs', '-o', f'ro,nosuid,nodev,lowerdir={":".join(map(str, (upper, *layers, base)))}', mount], timeout=30)
     if not os.path.ismount(mount):
         raise RuntimeError('The replacement filesystem did not mount.')
     return mount

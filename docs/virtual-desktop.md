@@ -77,7 +77,7 @@ if you want to switch back.
 
 Guest images built before the Console's SSH support need a rebuild: current
 builds of `scripts/build-virtual-guest.py` include an SSH server with key-only
-login. **Console › Connect** (or **Set up SSH key**) creates a lab-owned ed25519
+login. **Diagnostics › Console › Connect** (or **Set up SSH key**) creates a lab-owned ed25519
 key, authorizes it through the guest agent and connects over the loopback-only
 forward `127.0.0.1:2222`, then enters the firmware image mounted read-only at
 `/firmware` in the guest. If the image is not mounted, it says so and leaves you

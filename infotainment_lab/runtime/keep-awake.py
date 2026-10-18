@@ -16,10 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from simulation import Simulation, display_values as driving_values, indicator_values
 from vehicle_services import (VehicleServices, REQUEST_FIELDS, CAPABILITIES, DisplayWriter,
                               display_values, equivalent, speed_display_values, replay_location,
-                              MEDIA_NETWORK_SERVICES, media_network_values, navigation_fix)
+                              MEDIA_NETWORK_SERVICES, media_network_values, navigation_fix,
+                              GATEWAY_LOCK_SIGNALS, gateway_lock_values)
 from vehicle_services import BodyRequestRouter, BODY_REQUESTS, decode_service_request
 from display_bus import connect, call_many
 from config_csv import CAR_CONFIG_EXTRA, pending_overrides
+from display_requests import RequestRouter, DroppedCalls, load_routes, scan_request_names
 
 bus = connect(os.environ['DBUS_SESSION_BUS_ADDRESS'])
 state = Path(os.environ['TESLA_NATIVE_STATE'])
@@ -97,6 +99,30 @@ def typed(value):
     return dbus.String(value, variant_level=1)
 
 
+_fsd_checked = 0.0
+
+
+def hold_cluster_fsd_off():
+    """Keep the cluster out of its FSD fullscreen view, which hides the navigation popup.
+
+    This car is on Highway Autopilot, not full self-driving. The firmware sets IC_fsdFullscreenMode
+    to true when the cluster starts, and again later, so check about once a second and set it back.
+    """
+    global _fsd_checked
+    now = time.monotonic()
+    if now - _fsd_checked < 1.0:
+        return
+    _fsd_checked = now
+    try:
+        values = dbus.Interface(bus.get_object('com.tesla.ClusterDisplay', '/LocalDataValue', introspect=False),
+                                'com.tesla.LocalDataValue')
+        ok, raw = values.DataGetValueRequest('IC_fsdFullscreenMode', timeout=1)
+        if ok and str(raw) != 'false':
+            values.DataSetValueRequest('IC_fsdFullscreenMode', typed('false'), timeout=1)
+    except dbus.DBusException:
+        pass  # the cluster is not registered yet; the next check tries again
+
+
 def car_config():
     """Names the firmware restarts its UI for: the profile's keys, the known extras and any the supervisor learned."""
     learned = read_json('car-config-learned.json', [])
@@ -109,7 +135,7 @@ def app_owned():
     An imported value for one of these must not displace the app's model: Vehicle services would stop working.
     """
     names = set(awake) | set(network_values(snapshot)) | set(media_network_values(snapshot)) | set(indicator_values('off'))
-    names |= set(speed_display_values(0, 'Miles'))
+    names |= set(speed_display_values(0, 'Miles')) | set(GATEWAY_LOCK_SIGNALS)
     for groups in (display_values(model), driving_values(controls)):
         for group in groups.values(): names |= set(group)
     names |= set(navigation_fix(model, 0))
@@ -125,9 +151,42 @@ def apply_vehicle_profile(interface):
     # and the firmware would restart its UI until the supervisor gives up.
     car = car_config()
     values = {**vehicle_profile, **{n: v for n, v in config_values.items() if n in car}}
+    if os.environ.get('TESLA_NATIVE_FIRMWARE_VERSION'):
+        # The Service Mode panel shows this as Firmware; it is the image's own version.
+        values['VAPI_carVersionString'] = os.environ['TESLA_NATIVE_FIRMWARE_VERSION']
     writer = DisplayWriter(interface, typed, batch=call_many)
     _, details = writer.apply({'profile': values})
     return details['profile']
+
+
+def discover_requests():
+    """Find the firmware's request names once per image; the result is cached in the session."""
+    ui = Path(os.environ.get('TESLA_FIRMWARE', '/nonexistent')) / 'usr/tesla/UI'
+    try:
+        binary = (ui / 'bin/QtCar').stat()
+        signature = [str(ui), binary.st_size, binary.st_mtime_ns]
+    except OSError:
+        return
+    cached = read_json('display-request-names.json', {}) or {}
+    names, known = cached.get('names'), cached.get('known')
+    if cached.get('signature') != signature or not isinstance(names, list) or not isinstance(known, list):
+        names, known = scan_request_names(ui)
+        atomic_json('display-request-names.json', {'signature': signature, 'names': names, 'known': known})
+    request_router.known = set(known)
+    request_router.watched = set(names)
+
+
+def watch_dropped_calls():
+    """List D-Bus calls the firmware makes to services or methods nobody provides here."""
+    if not shutil.which('dbus-monitor'):
+        return
+    try:
+        with subprocess.Popen(['dbus-monitor', '--address', os.environ['DBUS_SESSION_BUS_ADDRESS'], "type='error'"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as process:
+            for line in process.stdout:
+                dropped_calls.feed(line, time.time())
+    except OSError as exc:
+        print(f'Unable to monitor dropped D-Bus calls: {exc}', flush=True)
 
 
 def network_values(current):
@@ -139,7 +198,7 @@ def network_values(current):
         'LINK_wifiEnabled': connected, 'LINK_wifiConnectionStatus': 'connected' if connected else 'disconnected',
         'LINK_wifiSsid': 'Local lab network', 'LINK_wifiBars': 4 if online else 0,
         'LINK_wifiState': 'online' if online else 'ready' if connected else 'idle',
-        'LINK_linkState': 'wifi' if connected else '', 'LINK_wifiOnlineCheckFailure': not online,
+        'LINK_linkState': 'wifi' if connected else '',
         'WIFI_connected': connected, 'WIFI_powered': connected,
         'WIFI_network': 'Local lab network', 'WIFI_address': current['ip'],
         'WIFI_signalQuality': 100 if online else 0,
@@ -148,7 +207,29 @@ def network_values(current):
     }
 
 
+GATEWAY_LOCK = 'gateway-lock.json'
+
+
+def gateway_lock_display_values():
+    """The firmware gateway signals for the lab gateway's current lock state.
+
+    The CAN service records the state in gateway-lock.json; the absolute expiry
+    time lets the countdown stay current between its writes. Missing file or a
+    malformed value means locked, which is the firmware's own default.
+    """
+    lock = read_json(GATEWAY_LOCK, {}) or {}
+    try:
+        return gateway_lock_values(lock.get('unlocked'), lock.get('unlock_expires_at') or 0, time.time())
+    except (TypeError, ValueError):
+        return gateway_lock_values(False, 0, time.time())
+
+
+request_router = RequestRouter(routes=load_routes(state / 'request-routes.json'),
+                               accepted=(read_json('display-requests-feedback.json', {}) or {}).get('accepted'))
+dropped_calls = DroppedCalls()
 threading.Thread(target=monitor, daemon=True).start()
+threading.Thread(target=discover_requests, daemon=True).start()
+threading.Thread(target=watch_dropped_calls, daemon=True).start()
 time.sleep(float(os.environ.get('TESLA_NATIVE_STATE_DELAY', '10')))
 # The driver, accessory-plus and display keep-alive/LCD/backlight values follow
 # "Car off" (simulation rails); forcing them here kept the screens awake.
@@ -156,6 +237,12 @@ awake = {'VAPI_carType': os.environ.get('TESLA_NATIVE_CAR_TYPE', '3'),
          'GUI_audioReady': True, 'GUI_serviceModeAudioResetNeeded': False}
 writers, owners, request_baseline = {}, {}, {}
 media_writers, media_owners, media_network_report = {}, {}, {}
+# The Service Mode backend reads vehicle values from QtCarDvServer's own store, not
+# the displays'. A car-config change there restarts SpotifyServer and ChromiumAdapter,
+# so VAPI_carType (the panel's chassis type) is written once per server start, and only
+# when the persisted value differs.
+DV_SERVER = 'com.tesla.DvServer'
+dv_writer, dv_owner, dv_car_type = None, None, None
 controls = Simulation()
 control_report, service_report, service_details, errors = {}, {}, {}, {}
 control_errors = {}
@@ -163,7 +250,9 @@ vehicle_profile_report = {}
 volume_max, distance_units = {}, {}
 config_stamp = None
 config_values, config_values_stamp, config_report, config_skip, config_sent = {}, None, {}, set(), {}
-next_inventory = next_requests = next_services = next_slow = next_network = next_report = 0
+routes_stamp = None
+gateway_lock_stamp = None
+next_inventory = next_requests = next_display_requests = next_services = next_slow = next_network = next_report = 0
 last_controls = None
 last_gps = None
 last_network_stamp = None
@@ -191,6 +280,21 @@ while True:
             pass
         for writer in writers.values():
             writer.skip = config_skip
+        try:
+            stamp = (state / 'request-routes.json').stat().st_mtime_ns
+        except FileNotFoundError:
+            stamp = None
+        if stamp != routes_stamp:
+            request_router.routes, routes_stamp = load_routes(state / 'request-routes.json'), stamp
+
+        # The CAN service records the gateway lock state here on each change; a
+        # change makes this tick write the gateway signals to every display.
+        try:
+            stamp = (state / GATEWAY_LOCK).stat().st_mtime_ns
+        except FileNotFoundError:
+            stamp = None
+        if stamp != gateway_lock_stamp:
+            gateway_lock_stamp, service_dirty = stamp, True
 
         if tick >= next_inventory:
             next_inventory = tick + .5
@@ -207,6 +311,16 @@ while True:
                         next_network = 0
                 except dbus.DBusException as exc:
                     errors[service] = str(exc)
+            try:
+                owner = str(bus.get_name_owner(DV_SERVER)) if bus.name_has_owner(DV_SERVER) else None
+                if owner != dv_owner:
+                    dv_owner, dv_writer = owner, owner and DisplayWriter(dbus.Interface(
+                        bus.get_object(DV_SERVER, '/LocalDataValue', introspect=False), 'com.tesla.LocalDataValue'), typed)
+                    dv_car_type = None
+                    service_report.pop(DV_SERVER, None)
+                    service_dirty = True
+            except dbus.DBusException as exc:
+                errors[DV_SERVER] = str(exc)
             for service in services:
                 try:
                     owner = str(bus.get_name_owner(service)) if bus.name_has_owner(service) else None
@@ -230,6 +344,7 @@ while True:
                         writers[service], owners[service] = writer, owner
                         if service == 'com.tesla.CenterDisplay':
                             body_router = BodyRequestRouter()
+                            request_router.restore(writer, time.time())
                         service_dirty = True
                         next_slow = 0
                         next_network = 0
@@ -300,6 +415,22 @@ while True:
                 if updated != model:
                     model, service_dirty, last_source = updated, True, 'native-ui'
 
+        # Other settings the center display requests: accept them into their
+        # status values so the UI shows the choice (see display_requests.py).
+        center_writer = writers.get('com.tesla.CenterDisplay')
+        if center_writer and tick >= next_display_requests:
+            next_display_requests = tick + .25
+            request_router.excluded = (set(REQUEST_FIELDS.values()) | set(BODY_REQUESTS) | app_owned()
+                                       | car_config() | config_skip)
+            try:
+                # One small batch per poll: reading all ~200 names at once stalled this
+                # 50ms loop for 1-2s and queued the center's GUI thread behind it. QtCar
+                # saturates near 300 reads/s; with the other polls this keeps it near 220.
+                request_router.poll(center_writer, time.time(), limit=16)
+                errors.pop('display-requests', None)
+            except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
+                errors['display-requests'] = str(exc)
+
         controls = Simulation.parse(read_json('controls.json', {}))
         current_controls = controls.as_dict()
         if controls.indicator != indicator_direction:
@@ -313,6 +444,9 @@ while True:
         if current_gps is None and last_gps is not None:
             service_dirty = True
 
+        if 'com.tesla.ClusterDisplay' in services:
+            hold_cluster_fsd_off()
+        gateway_lock = gateway_lock_display_values()
         for service, writer in tuple(writers.items()):
             try:
                 if current_controls != last_controls or tick >= next_slow or service in control_errors:
@@ -339,6 +473,9 @@ while True:
                     signals = display_values(model, volume_max.get(service, 10.333))
                     if gps:
                         signals = {k: v for k, v in signals.items() if k not in ('latitude_deg', 'longitude_deg', 'heading_deg')}
+                    # The center display's gateway banner reads its own store, so
+                    # mirror the lab gateway's lock state onto each display too.
+                    signals['gateway_lock'] = gateway_lock
                     report, details = writer.apply(signals, verify_cached=tick >= next_services)
                     service_report.setdefault(service, {}).update(report)
                     service_details.setdefault(service, {}).update(details)
@@ -353,7 +490,7 @@ while True:
                     service_details.setdefault(service, {}).update(fix_details)
                 if tick >= next_slow:
                     writer.apply({'awake': awake}, verify_cached=True)
-                if tick >= next_network:
+                if tick >= next_network and snapshot.get("checked_at") is not None:  # not before the first probe: the default says offline
                     writer.apply({'network': network_values(snapshot)}, verify_cached=True)
                 # Recheck explicit local FSD UI inputs that firmware service defaults
                 # can replace after startup. Other overrides are sent once.
@@ -377,11 +514,28 @@ while True:
                 control_errors[service] = str(exc)
                 control_report[service] = {field: 'error' for field in current_controls}
         last_controls, last_gps = current_controls, current_gps
+        if dv_writer and (tick >= next_services or service_dirty):
+            mirrored = {'odometer_km': display_values(model, 10.333)['odometer_km'],
+                        # The Service Mode backend reads gateway state from this store; this is
+                        # what makes the "Confirm User Presence" modal follow the lab unlock.
+                        'gateway_lock': gateway_lock,
+                        # Opens the Service Mode "Alerts & DTCs" tool; the displays take it from here without a restart.
+                        'alerts_panel': {'FEATURE_enableSUIAlertsPanel': True}}
+            if os.environ.get('TESLA_NATIVE_FIRMWARE_VERSION'):
+                mirrored['firmware_version'] = {'VAPI_carVersionString': os.environ['TESLA_NATIVE_FIRMWARE_VERSION']}
+            try:
+                if dv_car_type is None:
+                    dv_car_type = {'VAPI_carType': config_values.get('VAPI_carType', awake['VAPI_carType'])}
+                    mirrored['car_type'] = dv_car_type
+                service_report[DV_SERVER] = {**service_report.get(DV_SERVER, {}), **dv_writer.apply(mirrored)[0]}
+                errors.pop(DV_SERVER, None)
+            except (dbus.DBusException, OSError, ValueError, TypeError) as exc:
+                errors[DV_SERVER] = str(exc)
         if tick >= next_services or service_dirty:
             next_services, service_dirty = tick + 2, False
         if tick >= next_slow:
             next_slow = tick + 2
-        if tick >= next_network:
+        if tick >= next_network and snapshot.get("checked_at") is not None:  # not before the first probe: the default says offline
             for service, writer in tuple(media_writers.items()):
                 try:
                     _, detail = writer.apply({'network': media_network_values(snapshot)}, verify_cached=True)
@@ -406,6 +560,8 @@ while True:
                 'vehicle_profile': vehicle_profile_report,
                 'body_requests': body_router.report,
             })
+            atomic_json('display-requests-feedback.json', {**request_router.as_dict(), 'updated_at': now,
+                                                           'dropped_calls': dropped_calls.snapshot()})
             atomic_json('config-values-feedback.json', {
                 'requested': config_values, 'updated_at': now,
                 'firmware': {name: statuses for name, statuses in config_report.items() if name in writers}})

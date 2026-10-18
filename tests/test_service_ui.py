@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,14 +60,32 @@ def test_relay_closes_the_client_when_the_backend_is_down(tmp_path):
 
 
 def test_backend_runs_in_its_own_namespace_as_the_current_user(tmp_path):
-    backend, relay, engine = supervisor.service_ui_commands(tmp_path / 'odin', tmp_path / 'state')
-    assert backend[:4] == ['unshare', '--map-current-user', '--keep-caps', '-n']
+    backend, relay, engine, alertd = supervisor.service_ui_commands(tmp_path / 'odin', tmp_path / 'state')
+    assert backend[:5] == ['unshare', '--map-current-user', '--keep-caps', '-n', '-m']
     assert backend[-2:] == ['--', tmp_path / 'odin/service-ui']
     assert backend[backend.index('ns') + 1] == relay[relay.index('host') + 1] == tmp_path / 'state/service-ui.sock'
     assert relay[-1] == '8000'
     # The namespace's engine port goes to the stand-in's socket, before the backend argv.
     assert backend[backend.index('ns') + 3] == engine[2] == tmp_path / 'state/odin-engine.sock'
     assert engine[-1] == tmp_path / 'odin'
+
+
+def test_backend_is_capped_in_a_scope_bound_to_the_session(tmp_path, monkeypatch, capsys):
+    cgroup = tmp_path / 'cgroup'
+    cgroup.write_text('0::/user.slice/user@1000.service/app.slice/tsla-infotainment-lab.service\n')
+    monkeypatch.setattr(supervisor.shutil, 'which', lambda name: '/usr/bin/systemd-run')
+    probe = SimpleNamespace(returncode=0)
+    monkeypatch.setattr(supervisor, 'command', lambda argv, **kw: probe)
+    argv = supervisor.cpu_limited(['unshare', 'x'], cgroup=cgroup)
+    assert argv[:2] == ['/usr/bin/systemd-run', '--user'] and argv[-3:] == ['--', 'unshare', 'x']
+    assert '--property=CPUQuota=25%' in argv and '--property=BindsTo=tsla-infotainment-lab.service' in argv
+    # Without a working user manager, or outside a session unit, the backend still starts.
+    probe.returncode = 1
+    assert supervisor.cpu_limited(['unshare', 'x'], cgroup=cgroup) == ['unshare', 'x']
+    probe.returncode = 0
+    cgroup.write_text('0::/user.slice/user-1000.slice/session-2.scope\n')
+    assert supervisor.cpu_limited(['unshare', 'x'], cgroup=cgroup) == ['unshare', 'x']
+    assert 'without a CPU limit' in capsys.readouterr().out
 
 
 def test_service_backend_layout_is_detected_separately_from_odin_engine_assets(tmp_path):
@@ -83,17 +102,33 @@ def test_service_backend_layout_is_detected_separately_from_odin_engine_assets(t
         assert supervisor.service_ui_directory(tmp_path) == directory
     odin = tmp_path / 'opt/odin'
     diag = supervisor.service_ui_directory(tmp_path)
-    backend, relay, engine = supervisor.service_ui_commands(odin, tmp_path / 'state', backend_directory=diag)
+    backend, relay, engine, _ = supervisor.service_ui_commands(odin, tmp_path / 'state', backend_directory=diag)
     assert backend[-1] == tmp_path / 'opt/diag/service-ui'
     assert engine[-1] == odin
 
 
 def test_namespace_relays_the_engine_port_only_when_given_a_socket(tmp_path, monkeypatch):
     started = []
-    monkeypatch.setattr(netns, 'namespace', lambda path, port, argv, engine=None: started.append((argv, engine)) or 0)
+    monkeypatch.setattr(netns, 'namespace', lambda path, port, argv, engine=None, binds=(): started.append((argv, engine)) or 0)
     netns.main(['ns', str(tmp_path / 's.sock'), '8000', str(tmp_path / 'odin-engine.sock'), '--', 'service-ui'])
     netns.main(['ns', str(tmp_path / 's.sock'), '8000', '--', 'service-ui'])
     assert started == [(['service-ui'], tmp_path / 'odin-engine.sock'), (['service-ui'], None)]
+
+
+def test_binds_are_parsed_and_run_mode_has_no_relay(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(netns, 'namespace', lambda *args, **kw: started.append((args, kw)) or 0)
+    netns.main(['ns', 's.sock', '8000', 'e.sock', '--bind', '/var/log/x.log=/s/x.log', '--', 'service-ui'])
+    netns.main(['run', '--bind', '/home/alertd=/s/alertd-home', '--', 'alertd'])
+    assert started[0][0] == (Path('s.sock'), 8000, ['service-ui'], Path('e.sock'), [(Path('/var/log/x.log'), Path('/s/x.log'))])
+    assert started[1] == ((None, None, ['alertd']), {'binds': [(Path('/home/alertd'), Path('/s/alertd-home'))]})
+
+
+def test_alertd_stand_in_serves_the_session_and_service_ui_gets_an_empty_uds_log(tmp_path):
+    backend, _, _, alertd = supervisor.service_ui_commands(tmp_path / 'odin', tmp_path / 'state')
+    assert alertd[1:] == [supervisor.RUNTIME / 'alertd.py', tmp_path / 'state']
+    assert f'/var/log/udsdebug.log={tmp_path / "state/udsdebug.log"}' in backend
+    assert {'alertd'} <= supervisor.OPTIONAL & supervisor.RECOVERABLE
 
 
 def test_relayed_connections_have_no_idle_timeout():
@@ -115,3 +150,28 @@ def test_every_confined_firmware_process_has_a_local_peer_profile():
     confined |= {'/usr/tesla/UI/bin/SpotifyServer', '/usr/tesla/UI/bin/ChromiumAdapter'}  # built from a loop
     assert '/usr/tesla/UI/bin/QtCarDvServer' in confined
     assert confined <= profiles
+
+
+def test_namespace_owns_the_center_and_broadcast_addresses(tmp_path, monkeypatch):
+    # The backend's CAN-over-Ethernet task binds 192.168.90.255 and panics without it.
+    commands = []
+    monkeypatch.setattr(netns.subprocess, 'run', lambda argv, check: commands.append(argv))
+    monkeypatch.setattr(netns.subprocess, 'Popen', lambda argv: type('P', (), {'wait': lambda self: 0, 'terminate': lambda self: None})())
+    monkeypatch.setattr(netns.signal, 'signal', lambda *_: None)
+    netns.namespace(tmp_path / 's.sock', free_port(), ['service-ui'])
+    added = [argv[3] for argv in commands if argv[:3] == ['ip', 'addr', 'add']]
+    assert added == ['192.168.90.100/32', '192.168.90.255/32']
+
+
+def test_bind_private_opens_the_source_before_covering_its_parent(tmp_path, monkeypatch):
+    # alertd's source directory lives under /home, the directory the tmpfs covers.
+    parent = tmp_path / 'home'
+    (parent / 'user/session/alertd-home').mkdir(parents=True)
+    events, real_open = [], os.open
+    monkeypatch.setattr(netns, 'mount', lambda source, target, fstype=None, flags=0: events.append(('mount', Path(target))))
+    monkeypatch.setattr(netns.os, 'open', lambda path, flags: events.append(('open', Path(path))) or real_open(path, flags))
+    netns.bind_private(parent / 'alertd', parent / 'user/session/alertd-home')
+    covered = events.index(('mount', parent))
+    assert ('open', parent / 'user/session/alertd-home') in events[:covered]
+    assert all(kind == 'mount' for kind, _ in events[covered:])
+    assert (parent / 'alertd').is_dir()
